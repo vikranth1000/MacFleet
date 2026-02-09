@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "macfleet"
+version = "0.1.0"
+description = "Distributed ML training across Apple Silicon Macs over Thunderbolt"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "MacFleet Contributors"}
+]
+keywords = ["distributed", "machine-learning", "pytorch", "apple-silicon", "mps", "thunderbolt"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.1.0",
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "zeroconf>=0.131.0",
+    "rich>=13.0.0",
+    "click>=8.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+examples = [
+    "torchvision>=0.16.0",
+    "datasets>=2.14.0",
+]
+
+[project.scripts]
+macfleet = "cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/macfleet/macfleet"
+Documentation = "https://github.com/macfleet/macfleet#readme"
+Repository = "https://github.com/macfleet/macfleet"
+Issues = "https://github.com/macfleet/macfleet/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["macfleet*", "cli*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
