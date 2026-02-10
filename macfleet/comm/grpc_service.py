@@ -137,7 +137,7 @@ class ClusterControlServicer(control_pb2_grpc.ClusterControlServicer):
         return control_pb2.HeartbeatResponse(
             acknowledged=True,
             new_workload_weight=new_weight,
-            should_stop=not self._state.training_active,
+            should_stop=False,
         )
 
     def SyncBarrier(

@@ -100,6 +100,7 @@ class ClusterConfig:
     heartbeat_timeout_sec: float = DEFAULT_HEARTBEAT_TIMEOUT_SEC
     discovery_enabled: bool = True
     service_name: str = "_macfleet._tcp.local."
+    host: Optional[str] = None
 
     @property
     def master_grpc_address(self) -> str:

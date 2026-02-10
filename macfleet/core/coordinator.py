@@ -183,10 +183,10 @@ class Coordinator(BaseNode):
 
     def _handle_registration(self, node: NodeConfig) -> None:
         """Handle a new node registration."""
-        console.print(f"\n[bold green]Node registered:[/bold green]")
-        console.print(f"  Rank: {node.rank}")
-        console.print(f"  Hostname: {node.hostname}")
-        console.print(f"  IP: {node.ip_address}")
+        console.print(
+            f"\n[bold green]Worker registered: {node.hostname} "
+            f"at {node.ip_address}, rank {node.rank}[/bold green]"
+        )
         console.print(f"  GPU Cores: {node.gpu_cores}")
         console.print(f"  RAM: {node.ram_gb} GB")
         console.print(f"  Workload Weight: {node.workload_weight:.2%}")

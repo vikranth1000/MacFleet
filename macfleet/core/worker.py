@@ -85,7 +85,7 @@ class Worker(BaseNode):
         # Try to auto-discover master if enabled
         if self._auto_discover and not self._cluster_config.master_addr:
             console.print("  [yellow]Searching for master node...[/yellow]")
-            master = discover_master(timeout=10.0)
+            master = await asyncio.to_thread(discover_master, 10.0)
             if master:
                 self._cluster_config.master_addr = master.ip_address
                 self._cluster_config.master_port = master.grpc_port
@@ -201,8 +201,9 @@ class Worker(BaseNode):
                 self._master_tensor_addr = master_tensor_addr
                 self._master_tensor_port = master_tensor_port
 
-                console.print(f"  [green]Registered with coordinator[/green]")
-                console.print(f"    Assigned rank: {rank}")
+                console.print(
+                    f"  [green]Registered with master, assigned rank {rank}[/green]"
+                )
                 console.print(f"    Workload weight: {weight:.1%}")
                 console.print(f"    World size: {world_size}")
 

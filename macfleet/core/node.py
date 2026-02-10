@@ -54,6 +54,11 @@ class BaseNode(ABC):
         """
         self._cluster_config = cluster_config
         self._node_config = node_config or self._detect_node_config()
+
+        # Override IP if host was explicitly specified
+        if cluster_config.host:
+            self._node_config.ip_address = cluster_config.host
+
         self._cluster_state = ClusterState()
         self._transport: Optional[TensorTransport] = None
         self._service_registry: Optional[ServiceRegistry] = None
@@ -132,24 +137,26 @@ class BaseNode(ABC):
         )
 
     async def _setup_discovery(self) -> None:
-        """Set up service discovery."""
+        """Set up service discovery using async zeroconf."""
         if self._cluster_config.discovery_enabled:
             self._service_registry = ServiceRegistry()
-            self._service_registry.start()
 
-            # Register this node
-            gpu_info = get_gpu_info()
-            memory_info = get_memory_info()
+            try:
+                gpu_info = get_gpu_info()
+                memory_info = get_memory_info()
 
-            self._service_registry.register_service(
-                hostname=self._node_config.hostname,
-                ip_address=self._node_config.ip_address,
-                grpc_port=self._cluster_config.master_port,
-                tensor_port=self._node_config.tensor_port,
-                role=self._cluster_config.role.value,
-                gpu_cores=gpu_info.get("gpu_cores", 10),
-                ram_gb=memory_info.get("total_gb", 16),
-            )
+                await self._service_registry.async_register_service(
+                    hostname=self._node_config.hostname,
+                    ip_address=self._node_config.ip_address,
+                    grpc_port=self._cluster_config.master_port,
+                    tensor_port=self._node_config.tensor_port,
+                    role=self._cluster_config.role.value,
+                    gpu_cores=gpu_info.get("gpu_cores", 10),
+                    ram_gb=memory_info.get("total_gb", 16),
+                )
+            except Exception as e:
+                print(f"  Warning: Service discovery registration failed: {e}")
+                self._service_registry = None
 
     async def _teardown_transport(self) -> None:
         """Tear down the tensor transport layer."""
@@ -160,7 +167,10 @@ class BaseNode(ABC):
     async def _teardown_discovery(self) -> None:
         """Tear down service discovery."""
         if self._service_registry:
-            self._service_registry.stop()
+            try:
+                await self._service_registry.async_stop()
+            except Exception:
+                pass
             self._service_registry = None
 
     def _setup_signal_handlers(self) -> None:

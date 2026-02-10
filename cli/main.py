@@ -57,6 +57,12 @@ def cli():
     help="Master address for workers (e.g., 10.0.0.1 or 10.0.0.1:50051).",
 )
 @click.option(
+    "--host",
+    type=str,
+    default=None,
+    help="IP address to bind to (e.g., 169.254.83.200 for Thunderbolt bridge).",
+)
+@click.option(
     "--no-discovery",
     is_flag=True,
     help="Disable Bonjour/zeroconf discovery.",
@@ -66,17 +72,18 @@ def launch(
     port: int,
     tensor_port: int,
     master: str,
+    host: str,
     no_discovery: bool,
 ):
     """Launch a MacFleet node (coordinator or worker).
 
     Examples:
 
-        # On MacBook Pro (master):
-        macfleet launch --role master --port 50051
+        # On MacBook Pro (master), bind to Thunderbolt IP:
+        macfleet launch --role master --host 169.254.83.200 --port 50051
 
         # On MacBook Air (worker):
-        macfleet launch --role worker --master 10.0.0.1
+        macfleet launch --role worker --master 169.254.83.200 --port 50051
 
         # Worker with specific ports:
         macfleet launch --role worker --master 10.0.0.1:50051 --tensor-port 50053
@@ -100,6 +107,7 @@ def launch(
         master_port=master_port,
         tensor_port=tensor_port,
         discovery_enabled=not no_discovery,
+        host=host,
     )
 
     # Print banner

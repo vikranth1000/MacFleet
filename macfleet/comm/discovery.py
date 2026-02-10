@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from zeroconf import ServiceBrowser, ServiceInfo, ServiceListener, Zeroconf
+from zeroconf.asyncio import AsyncZeroconf
 
 
 # Service type for MacFleet
@@ -118,18 +119,25 @@ class ServiceRegistry:
     def __init__(self):
         """Initialize the registry."""
         self._zeroconf: Optional[Zeroconf] = None
+        self._async_zeroconf: Optional[AsyncZeroconf] = None
         self._service_info: Optional[ServiceInfo] = None
         self._browser: Optional[ServiceBrowser] = None
         self._listener: Optional[MacFleetServiceListener] = None
         self._discovered_nodes: dict[str, DiscoveredNode] = {}
 
     def start(self) -> None:
-        """Start the zeroconf instance."""
+        """Start the zeroconf instance (synchronous)."""
         if not self._zeroconf:
             self._zeroconf = Zeroconf()
 
+    async def async_start(self) -> None:
+        """Start the zeroconf instance (async-safe)."""
+        if not self._async_zeroconf:
+            self._async_zeroconf = AsyncZeroconf()
+            self._zeroconf = self._async_zeroconf.zeroconf
+
     def stop(self) -> None:
-        """Stop the zeroconf instance and cleanup."""
+        """Stop the zeroconf instance and cleanup (synchronous)."""
         if self._browser:
             self._browser.cancel()
             self._browser = None
@@ -142,7 +150,54 @@ class ServiceRegistry:
             self._zeroconf.close()
             self._zeroconf = None
 
+        self._async_zeroconf = None
         self._discovered_nodes.clear()
+
+    async def async_stop(self) -> None:
+        """Stop the zeroconf instance and cleanup (async-safe)."""
+        if self._browser:
+            self._browser.cancel()
+            self._browser = None
+
+        if self._service_info and self._async_zeroconf:
+            await self._async_zeroconf.async_unregister_service(self._service_info)
+            self._service_info = None
+
+        if self._async_zeroconf:
+            await self._async_zeroconf.async_close()
+            self._async_zeroconf = None
+            self._zeroconf = None
+
+        self._discovered_nodes.clear()
+
+    def _build_service_info(
+        self,
+        hostname: str,
+        ip_address: str,
+        grpc_port: int,
+        tensor_port: int,
+        role: str,
+        gpu_cores: int,
+        ram_gb: int,
+    ) -> ServiceInfo:
+        """Build a ServiceInfo object for registration."""
+        service_name = f"{hostname}.{MACFLEET_SERVICE_TYPE}"
+
+        properties = {
+            b"role": role.encode(),
+            b"tensor_port": str(tensor_port).encode(),
+            b"gpu_cores": str(gpu_cores).encode(),
+            b"ram_gb": str(ram_gb).encode(),
+        }
+
+        return ServiceInfo(
+            MACFLEET_SERVICE_TYPE,
+            service_name,
+            addresses=[socket.inet_aton(ip_address)],
+            port=grpc_port,
+            properties=properties,
+            server=f"{hostname}.local.",
+        )
 
     def register_service(
         self,
@@ -154,7 +209,7 @@ class ServiceRegistry:
         gpu_cores: int,
         ram_gb: int,
     ) -> None:
-        """Register this node as a MacFleet service.
+        """Register this node as a MacFleet service (synchronous).
 
         Args:
             hostname: This node's hostname.
@@ -168,26 +223,41 @@ class ServiceRegistry:
         if not self._zeroconf:
             self.start()
 
-        # Create service info
-        service_name = f"{hostname}.{MACFLEET_SERVICE_TYPE}"
-
-        properties = {
-            b"role": role.encode(),
-            b"tensor_port": str(tensor_port).encode(),
-            b"gpu_cores": str(gpu_cores).encode(),
-            b"ram_gb": str(ram_gb).encode(),
-        }
-
-        self._service_info = ServiceInfo(
-            MACFLEET_SERVICE_TYPE,
-            service_name,
-            addresses=[socket.inet_aton(ip_address)],
-            port=grpc_port,
-            properties=properties,
-            server=f"{hostname}.local.",
+        self._service_info = self._build_service_info(
+            hostname, ip_address, grpc_port, tensor_port, role, gpu_cores, ram_gb,
         )
-
         self._zeroconf.register_service(self._service_info, ttl=DEFAULT_TTL)
+
+    async def async_register_service(
+        self,
+        hostname: str,
+        ip_address: str,
+        grpc_port: int,
+        tensor_port: int,
+        role: str,
+        gpu_cores: int,
+        ram_gb: int,
+    ) -> None:
+        """Register this node as a MacFleet service (async-safe).
+
+        Args:
+            hostname: This node's hostname.
+            ip_address: This node's IP address.
+            grpc_port: gRPC port for control messages.
+            tensor_port: Port for tensor transfers.
+            role: Node role ("master" or "worker").
+            gpu_cores: Number of GPU cores.
+            ram_gb: RAM in gigabytes.
+        """
+        if not self._async_zeroconf:
+            await self.async_start()
+
+        self._service_info = self._build_service_info(
+            hostname, ip_address, grpc_port, tensor_port, role, gpu_cores, ram_gb,
+        )
+        await self._async_zeroconf.async_register_service(
+            self._service_info, ttl=DEFAULT_TTL,
+        )
 
     def unregister_service(self) -> None:
         """Unregister this node's service."""
@@ -263,7 +333,6 @@ class ServiceRegistry:
             self.start()
 
         master_node: Optional[DiscoveredNode] = None
-        found_event = None
 
         def on_add(node: DiscoveredNode) -> None:
             nonlocal master_node
