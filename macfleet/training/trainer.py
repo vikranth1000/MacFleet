@@ -31,6 +31,7 @@ from macfleet.core.config import (
 )
 from macfleet.training.data_parallel import MacFleetDDP
 from macfleet.training.distributed_sampler import WeightedDistributedSampler
+from macfleet.utils.tensor_utils import MessageType
 
 
 console = Console()
@@ -82,6 +83,7 @@ class Trainer:
         criterion: Optional[nn.Module] = None,
         val_dataset: Optional[Dataset] = None,
         callbacks: Optional[list[Callable]] = None,
+        distributed: bool = False,
     ):
         """Initialize the trainer.
 
@@ -95,6 +97,7 @@ class Trainer:
             criterion: Loss function (default: CrossEntropyLoss).
             val_dataset: Optional validation dataset.
             callbacks: Optional list of callback functions.
+            distributed: Whether to run distributed training.
         """
         self.model = model
         self.dataset = dataset
@@ -105,10 +108,16 @@ class Trainer:
         self.criterion = criterion or nn.CrossEntropyLoss()
         self.val_dataset = val_dataset
         self.callbacks = callbacks or []
+        self.distributed = distributed
 
         # State
         self.state = TrainerState()
         self._metrics = TrainingMetrics()
+
+        # Distributed state
+        self._rank = 0
+        self._world_size = 1
+        self._weights = [1.0]
 
         # Distributed components (initialized in setup)
         self._transport: Optional[TensorTransport] = None
@@ -117,6 +126,10 @@ class Trainer:
         self._optimizer: Optional[Optimizer] = None
         self._dataloader: Optional[DataLoader] = None
         self._sampler: Optional[WeightedDistributedSampler] = None
+
+        # gRPC handles (for teardown)
+        self._grpc_server = None
+        self._grpc_client = None
 
         # Device
         self._device = self._get_device()
@@ -131,43 +144,58 @@ class Trainer:
 
     async def setup(self) -> None:
         """Set up distributed training components."""
-        console.print("[bold blue]Setting up distributed training...[/bold blue]")
+        console.print("[bold blue]Setting up training...[/bold blue]")
 
         # Move model to device
         self.model = self.model.to(self._device)
         console.print(f"  Model moved to {self._device}")
 
-        # Set up transport
+        # Create tensor transport (used for send/recv once connections are stored)
         self._transport = TensorTransport(
             host="0.0.0.0",
             port=self.cluster_config.tensor_port,
         )
-        await self._transport.start_server()
 
-        # For single-node training (testing/development)
-        if self.cluster_config.role == NodeRole.MASTER:
-            rank = 0
-            world_size = 1  # Will be updated when workers join
-            weights = [1.0]
+        if not self.distributed:
+            # Single-node: start background server for general use
+            await self._transport.start_server()
+        # For distributed: connections are managed explicitly in
+        # _setup_distributed_master / _setup_distributed_worker
+        console.print(f"  Tensor transport on port {self.cluster_config.tensor_port}")
+
+        # Set up distributed or single-node
+        if self.distributed:
+            if self.cluster_config.role == NodeRole.MASTER:
+                await self._setup_distributed_master()
+            else:
+                await self._setup_distributed_worker()
         else:
-            # Worker - would connect to master here
-            rank = 1
-            world_size = 2
-            weights = [0.62, 0.38]
+            self._rank = 0
+            self._world_size = 1
+            self._weights = [1.0]
 
         # Create collective group
         self._collective_group = CollectiveGroup(
-            rank=rank,
-            world_size=world_size,
+            rank=self._rank,
+            world_size=self._world_size,
             transport=self._transport,
         )
         self._collective_group.set_device(self._device)
 
-        # Create compression pipeline
-        compression = create_pipeline(
-            self.training_config.compression.value,
-            self.training_config.topk_ratio,
-        )
+        # Wire up peer connections on the collective group
+        if self.distributed and hasattr(self, '_peer_info'):
+            for peer_rank, conn_key in self._peer_info.items():
+                self._collective_group._peer_connections[peer_rank] = conn_key
+
+        # Verify connections with test tensor
+        if self.distributed and self._world_size > 1:
+            await self._verify_connections()
+
+        # Create compression pipeline (None when no compression)
+        compression_type = self.training_config.compression.value
+        compression = None
+        if compression_type != "none":
+            compression = create_pipeline(compression_type, self.training_config.topk_ratio)
 
         # Wrap model in DDP
         self._ddp_model = MacFleetDDP(
@@ -185,14 +213,14 @@ class Trainer:
         # Create sampler and dataloader
         self._sampler = WeightedDistributedSampler(
             dataset=self.dataset,
-            num_replicas=world_size,
-            rank=rank,
-            weights=weights,
+            num_replicas=self._world_size,
+            rank=self._rank,
+            weights=self._weights,
             shuffle=True,
         )
 
         # Compute per-node batch size
-        weight = weights[rank] if rank < len(weights) else 1.0 / world_size
+        weight = self._weights[self._rank] if self._rank < len(self._weights) else 1.0 / self._world_size
         local_batch_size = max(1, int(self.training_config.batch_size * weight))
 
         self._dataloader = DataLoader(
@@ -203,15 +231,251 @@ class Trainer:
             pin_memory=False,
         )
 
-        console.print(f"  Rank: {rank}, World size: {world_size}")
+        console.print(f"  Rank: {self._rank}, World size: {self._world_size}")
         console.print(f"  Local batch size: {local_batch_size}")
         console.print(f"  Samples per epoch: {len(self._sampler)}")
         console.print("[bold green]Setup complete![/bold green]")
 
+    async def _setup_distributed_master(self) -> None:
+        """Set up master node for distributed training.
+
+        Starts gRPC server, waits for workers to register, then
+        accepts their TCP tensor connections using raw socket accept.
+        """
+        import socket as _socket
+
+        from macfleet.comm.grpc_service import ClusterControlServicer, GRPCServer
+        from macfleet.utils.network import (
+            get_gpu_info, get_hostname, get_local_ip,
+            get_memory_bandwidth, get_memory_info,
+        )
+
+        hostname = get_hostname()
+        ip = self.cluster_config.host or get_local_ip()
+        gpu_info = get_gpu_info()
+        mem_info = get_memory_info()
+
+        cluster_state = ClusterState()
+
+        # Register self as rank 0
+        self_node = NodeConfig(
+            hostname=hostname,
+            ip_address=ip,
+            gpu_cores=gpu_info.get("gpu_cores", 10),
+            ram_gb=mem_info.get("total_gb", 16),
+            memory_bandwidth_gbps=get_memory_bandwidth(),
+            tensor_port=self.cluster_config.tensor_port,
+            rank=0,
+            workload_weight=1.0,
+        )
+        cluster_state.add_node(self_node)
+
+        # Create raw listening socket for tensor connections.
+        # We avoid asyncio.start_server because its handle_client callback
+        # doesn't fire reliably when gRPC threads are running.
+        loop = asyncio.get_running_loop()
+        server_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        server_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        server_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF, 1024 * 1024)
+        server_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_SNDBUF, 1024 * 1024)
+        server_sock.bind(("0.0.0.0", self.cluster_config.tensor_port))
+        server_sock.listen(8)
+        server_sock.setblocking(False)
+        self._tensor_server_sock = server_sock
+        console.print(f"  Tensor server listening on port {self.cluster_config.tensor_port}")
+
+        # Wait for workers via gRPC registration
+        registered_workers: list[NodeConfig] = []
+        worker_event = asyncio.Event()
+
+        def on_register(node: NodeConfig) -> None:
+            registered_workers.append(node)
+            # Thread-safe: gRPC callback runs on a thread pool thread
+            loop.call_soon_threadsafe(worker_event.set)
+
+        servicer = ClusterControlServicer(
+            cluster_state=cluster_state,
+            tensor_addr=ip,
+            tensor_port=self.cluster_config.tensor_port,
+            on_register=on_register,
+        )
+
+        self._grpc_server = GRPCServer(
+            servicer=servicer,
+            host="0.0.0.0",
+            port=self.cluster_config.master_port,
+        )
+        self._grpc_server.start()
+        console.print(f"  gRPC server started on port {self.cluster_config.master_port}")
+        console.print("  [yellow]Waiting for workers to register...[/yellow]")
+
+        # Wait for at least one worker
+        await asyncio.wait_for(worker_event.wait(), timeout=120.0)
+        # Brief pause to allow any additional workers
+        await asyncio.sleep(2.0)
+
+        self._rank = 0
+        self._world_size = cluster_state.world_size
+
+        # Build weights sorted by rank
+        self._weights = [0.0] * self._world_size
+        for node in cluster_state.nodes.values():
+            self._weights[node.rank] = node.workload_weight
+
+        # Accept TCP tensor connections from each worker using raw socket.
+        # This is reliable because loop.sock_accept is a proper awaitable
+        # that doesn't depend on asyncio server callbacks.
+        self._peer_info: dict[int, str] = {}
+        for worker in registered_workers:
+            console.print(
+                f"  [green]Worker registered: {worker.hostname} "
+                f"at {worker.ip_address}, rank {worker.rank}[/green]"
+            )
+            console.print(f"  [yellow]Waiting for tensor connection from rank {worker.rank}...[/yellow]")
+
+            client_sock, addr = await asyncio.wait_for(
+                loop.sock_accept(server_sock), timeout=60.0,
+            )
+            client_sock.setblocking(False)
+
+            # Wrap accepted socket into asyncio streams
+            reader, writer = await asyncio.open_connection(sock=client_sock)
+
+            conn_key = f"{addr[0]}:{addr[1]}"
+            async with self._transport._lock:
+                self._transport._connections[conn_key] = (reader, writer)
+            self._peer_info[worker.rank] = conn_key
+            console.print(f"  TCP tensor connection established with rank {worker.rank}")
+
+    async def _setup_distributed_worker(self) -> None:
+        """Set up worker node for distributed training.
+
+        Registers with master via gRPC, then waits for master to
+        connect to our tensor port for AllReduce communication.
+        """
+        from macfleet.comm.grpc_service import ClusterControlClient
+        from macfleet.utils.network import (
+            get_gpu_info, get_hostname, get_local_ip,
+            get_memory_bandwidth, get_memory_info,
+        )
+
+        hostname = get_hostname()
+        ip = self.cluster_config.host or get_local_ip()
+        gpu_info = get_gpu_info()
+        mem_info = get_memory_info()
+
+        console.print(
+            f"  Connecting to master at "
+            f"{self.cluster_config.master_addr}:{self.cluster_config.master_port}"
+        )
+
+        self._grpc_client = ClusterControlClient(
+            self.cluster_config.master_addr,
+            self.cluster_config.master_port,
+        )
+
+        # Retry gRPC connect + register (channel is lazy, so the real
+        # network I/O happens inside register(), not connect())
+        for attempt in range(30):
+            try:
+                self._grpc_client.connect()
+                rank, weight, world_size, master_tensor_addr, master_tensor_port = (
+                    self._grpc_client.register(
+                        hostname=hostname,
+                        ip_address=ip,
+                        gpu_cores=gpu_info.get("gpu_cores", 10),
+                        ram_gb=mem_info.get("total_gb", 16),
+                        memory_bandwidth_gbps=get_memory_bandwidth(),
+                        tensor_port=self.cluster_config.tensor_port,
+                    )
+                )
+                break
+            except Exception as e:
+                if attempt < 29:
+                    console.print(f"  [yellow]Attempt {attempt + 1}/30 failed: {e}[/yellow]")
+                    self._grpc_client.disconnect()
+                    await asyncio.sleep(3.0)
+                else:
+                    raise RuntimeError(
+                        f"Failed to register with master after 30 attempts"
+                    )
+
+        console.print(f"  [green]Registered with master, assigned rank {rank}[/green]")
+
+        self._rank = rank
+        self._world_size = world_size
+
+        # Fallback: if gRPC response has empty tensor addr, use master_addr
+        if not master_tensor_addr:
+            master_tensor_addr = self.cluster_config.master_addr
+        if not master_tensor_port:
+            master_tensor_port = self.cluster_config.tensor_port
+
+        console.print(
+            f"  Master tensor endpoint: {master_tensor_addr}:{master_tensor_port}"
+        )
+
+        # Get full cluster weights from master
+        state = self._grpc_client.get_cluster_state()
+        self._weights = [0.0] * world_size
+        for node in state['nodes']:
+            self._weights[node['rank']] = node['workload_weight']
+
+        # Connect to master's tensor port (worker initiates TCP)
+        conn_key = await self._transport.connect(
+            master_tensor_addr, master_tensor_port,
+        )
+        self._peer_info = {0: conn_key}
+        console.print(f"  TCP tensor connection established with master")
+
+    async def _verify_connections(self) -> None:
+        """Verify peer connections by exchanging a small test tensor.
+
+        Master sends first, worker receives first, ensuring no deadlock.
+        """
+        console.print("  Verifying peer connections...")
+
+        test_tensor = torch.tensor(
+            [float(self._rank), 1.0, 2.0, 3.0], dtype=torch.float32,
+        )
+
+        for peer_rank, conn_key in self._collective_group._peer_connections.items():
+            if self._rank < peer_rank:
+                # Lower rank sends first, then receives
+                await self._transport.send_tensor(
+                    test_tensor, conn_key, MessageType.TENSOR_WEIGHTS,
+                )
+                recv, _ = await self._transport.recv_tensor(conn_key)
+                assert recv.shape == test_tensor.shape
+            else:
+                # Higher rank receives first, then sends
+                recv, _ = await self._transport.recv_tensor(conn_key)
+                assert recv.shape == test_tensor.shape
+                await self._transport.send_tensor(
+                    test_tensor, conn_key, MessageType.TENSOR_WEIGHTS,
+                )
+
+            console.print(
+                f"    Rank {self._rank} <-> Rank {peer_rank}: "
+                f"[green]OK[/green] (received {recv.tolist()})"
+            )
+
     async def teardown(self) -> None:
         """Clean up distributed components."""
+        if self._collective_group:
+            await self._collective_group.disconnect_all()
         if self._transport:
             await self._transport.stop_server()
+        # Close raw tensor server socket (used by master in distributed mode)
+        if hasattr(self, '_tensor_server_sock') and self._tensor_server_sock:
+            self._tensor_server_sock.close()
+            self._tensor_server_sock = None
+        if self._grpc_server:
+            self._grpc_server.stop()
+            self._grpc_server = None
+        if self._grpc_client:
+            self._grpc_client.disconnect()
+            self._grpc_client = None
 
     def fit(self) -> TrainerState:
         """Train the model.
@@ -219,7 +483,7 @@ class Trainer:
         Returns:
             Final trainer state.
         """
-        return asyncio.get_event_loop().run_until_complete(self._fit_async())
+        return asyncio.run(self._fit_async())
 
     async def _fit_async(self) -> TrainerState:
         """Async implementation of fit."""
@@ -235,6 +499,11 @@ class Trainer:
                 # Train one epoch
                 epoch_metrics = await self._train_epoch(epoch)
 
+                # Clear MPS cache between epochs to prevent memory buildup
+                if self._device == "mps":
+                    torch.mps.synchronize()
+                    torch.mps.empty_cache()
+
                 # Print epoch summary
                 self._print_epoch_summary(epoch, epoch_metrics)
 
@@ -242,13 +511,32 @@ class Trainer:
                 if self.val_dataset is not None:
                     val_metrics = await self._validate()
                     console.print(f"  Validation loss: {val_metrics['loss']:.4f}")
+                    # Clear cache after validation too
+                    if self._device == "mps":
+                        torch.mps.empty_cache()
 
                 # Checkpoint
                 if (epoch + 1) % self.training_config.checkpoint_every == 0:
                     self._save_checkpoint(epoch)
 
+            # Barrier: wait for all nodes to finish before teardown.
+            # The master finishes faster (higher throughput), so without this
+            # it tears down the TCP connection while the worker is still syncing.
+            if self.distributed and self._world_size > 1:
+                console.print("[dim]Waiting for all nodes to finish...[/dim]")
+                try:
+                    from macfleet.comm.collectives import allreduce
+                    barrier_tensor = torch.ones(1, device="cpu")
+                    await allreduce(barrier_tensor, self._collective_group, op="sum")
+                    console.print("[dim]All nodes synchronized.[/dim]")
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass  # Other node already disconnected, that's OK
+
             console.print("\n[bold green]Training complete![/bold green]")
 
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            console.print(f"\n[bold red]Peer disconnected: {e}[/bold red]")
+            console.print("[yellow]The other node may have run out of memory or crashed.[/yellow]")
         finally:
             await self.teardown()
 
@@ -283,7 +571,7 @@ class Trainer:
                 # Forward pass (timed)
                 compute_start = time.perf_counter()
 
-                self._ddp_model.zero_grad()
+                self._ddp_model.zero_grad(set_to_none=True)
                 outputs = self._ddp_model(inputs)
                 loss = self.criterion(outputs, targets)
 
@@ -305,14 +593,22 @@ class Trainer:
                 self._optimizer.step()
 
                 # Metrics
-                total_loss += loss.item()
+                batch_loss = loss.item()
+                total_loss += batch_loss
                 _, predicted = outputs.max(1)
                 total_correct += predicted.eq(targets).sum().item()
                 total_samples += targets.size(0)
+
+                # Free forward pass memory
+                del outputs, loss, predicted
                 total_compute_time += compute_time
                 total_comm_time += comm_time
 
                 self.state.global_step += 1
+
+                # Periodic MPS cache clear to prevent memory buildup within epoch
+                if self._device == "mps" and (batch_idx + 1) % 50 == 0:
+                    torch.mps.empty_cache()
 
                 progress.update(task, advance=1)
 
@@ -357,6 +653,7 @@ class Trainer:
                 _, predicted = outputs.max(1)
                 total_correct += predicted.eq(targets).sum().item()
                 total_samples += targets.size(0)
+                del outputs, loss, predicted
 
         return {
             "loss": total_loss / len(val_loader),
@@ -381,20 +678,28 @@ class Trainer:
         console.print(table)
 
     def _save_checkpoint(self, epoch: int) -> None:
-        """Save a training checkpoint."""
+        """Save a training checkpoint. Only master (rank 0) saves."""
+        if self._rank != 0:
+            return
+
         checkpoint_dir = self.training_config.checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        checkpoint = {
-            "epoch": epoch,
-            "global_step": self.state.global_step,
-            "model_state_dict": self._ddp_model.state_dict(),
-            "optimizer_state_dict": self._optimizer.state_dict(),
-            "training_config": self.training_config.to_dict(),
-        }
-
         path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch + 1}.pt")
-        torch.save(checkpoint, path)
+        # Save directly without building a full dict in memory
+        torch.save(
+            {
+                "epoch": epoch,
+                "global_step": self.state.global_step,
+                "model_state_dict": self._ddp_model.state_dict(),
+                "optimizer_state_dict": self._optimizer.state_dict(),
+                "training_config": self.training_config.to_dict(),
+            },
+            path,
+        )
+        # Clear MPS cache after checkpoint (state_dict creates copies)
+        if self._device == "mps":
+            torch.mps.empty_cache()
         console.print(f"[green]Checkpoint saved: {path}[/green]")
 
     def load_checkpoint(self, path: str) -> None:

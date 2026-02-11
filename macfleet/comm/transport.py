@@ -70,6 +70,11 @@ class TensorTransport:
             async with self._lock:
                 self._connections[addr_key] = (reader, writer)
 
+            if not on_receive:
+                # No callback - connection stored for explicit send/recv.
+                # Don't read from the stream; recv_tensor will do that.
+                return
+
             try:
                 while True:
                     # Read header
@@ -85,24 +90,22 @@ class TensorTransport:
                         remaining = await reader.readexactly(metadata_size + payload_size)
                         full_data = header_data + remaining
 
-                        if on_receive:
-                            indices, values, orig_numel, orig_dtype = deserialize_compressed_gradient(
-                                full_data
-                            )
-                            await on_receive(
-                                (indices, values, orig_numel, orig_dtype),
-                                msg_type,
-                                addr,
-                            )
+                        indices, values, orig_numel, orig_dtype = deserialize_compressed_gradient(
+                            full_data
+                        )
+                        await on_receive(
+                            (indices, values, orig_numel, orig_dtype),
+                            msg_type,
+                            addr,
+                        )
                     else:
                         # Read shape + payload
                         shape_size = n_dims * 4
                         remaining = await reader.readexactly(shape_size + payload_size)
                         full_data = header_data + remaining
 
-                        if on_receive:
-                            tensor, msg_type = bytes_to_tensor(full_data)
-                            await on_receive(tensor, msg_type, addr)
+                        tensor, msg_type = bytes_to_tensor(full_data)
+                        await on_receive(tensor, msg_type, addr)
 
             except (asyncio.IncompleteReadError, ConnectionResetError):
                 # Client disconnected
@@ -181,6 +184,29 @@ class TensorTransport:
 
         return conn_key
 
+    async def wait_for_incoming(self, from_ip: str, timeout: float = 30.0) -> str:
+        """Wait for an incoming connection from a specific IP.
+
+        Args:
+            from_ip: IP address to wait for.
+            timeout: Maximum time to wait in seconds.
+
+        Returns:
+            Connection key for the accepted connection.
+
+        Raises:
+            TimeoutError: If no connection arrives within timeout.
+        """
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            async with self._lock:
+                for conn_key in self._connections:
+                    if conn_key.startswith(from_ip + ":"):
+                        return conn_key
+            await asyncio.sleep(0.1)
+        raise TimeoutError(f"No incoming connection from {from_ip} within {timeout}s")
+
     async def disconnect(self, conn_key: str) -> None:
         """Disconnect from a remote server.
 
@@ -191,8 +217,11 @@ class TensorTransport:
             conn = self._connections.pop(conn_key, None)
             if conn:
                 _, writer = conn
-                writer.close()
-                await writer.wait_closed()
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass  # Peer already disconnected
 
     async def send_tensor(
         self,

@@ -125,9 +125,11 @@ class MacFleetDDP(nn.Module):
 
         # Flatten all gradients into a single tensor for efficiency
         flat_grads = torch.cat([g.flatten() for g in grads])
+        del grads  # Free the list of references
 
         # AllReduce
         reduced = await self._allreduce(flat_grads, op="mean")
+        del flat_grads  # Free the original flat tensor
 
         # Unflatten and copy back
         offset = 0
@@ -138,6 +140,7 @@ class MacFleetDDP(nn.Module):
                     reduced[offset:offset + numel].view_as(param.grad)
                 )
                 offset += numel
+        del reduced
 
     def sync_gradients_sync(self) -> None:
         """Synchronous wrapper for sync_gradients."""

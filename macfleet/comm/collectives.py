@@ -158,19 +158,19 @@ class AllReduce:
 
         async def recv():
             if self._compress_fn:
+                # Receive on CPU — decompression uses scatter_ which
+                # doesn't work on MPS. We move to device after reduction.
                 return await self._group._transport.recv_compressed_gradient(
-                    peer_conn, self._group._device
+                    peer_conn, "cpu"
                 )
             else:
                 return await self._group._transport.recv_tensor(
                     peer_conn, self._group._device
                 )
 
-        # Execute send and receive concurrently
-        await asyncio.gather(send(), asyncio.sleep(0))
-
-        # Now receive
-        recv_data = await recv()
+        # Send and receive concurrently to avoid deadlock on large tensors.
+        # Both sides send while also reading, so TCP flow control works.
+        _, recv_data = await asyncio.gather(send(), recv())
 
         # Decompress if needed
         if self._decompress_fn and isinstance(recv_data, tuple):
