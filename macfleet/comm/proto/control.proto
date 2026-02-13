@@ -25,6 +25,9 @@ service ClusterControl {
     // Get current cluster state
     rpc GetClusterState(Empty) returns (ClusterStateProto);
 
+    // Graceful deregistration from cluster
+    rpc Deregister(DeregisterRequest) returns (Ack);
+
     // Broadcast message to all nodes
     rpc Broadcast(BroadcastRequest) returns (Ack);
 }
@@ -128,6 +131,12 @@ message ClusterStateProto {
     int32 current_epoch = 4;
     int32 current_step = 5;
     string training_status = 6;  // "idle", "training", "paused", "completed"
+}
+
+// Deregistration request from worker
+message DeregisterRequest {
+    int32 rank = 1;
+    string reason = 2;
 }
 
 // Broadcast request for sending messages to all nodes

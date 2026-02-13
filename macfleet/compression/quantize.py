@@ -14,6 +14,9 @@ class FP16Quantizer:
 
     Casts FP32 tensors to FP16 before transmission,
     providing 2x bandwidth reduction with minimal accuracy loss.
+
+    Note: This class is NOT thread-safe. The internal scale state
+    must only be accessed from a single thread/coroutine (the training loop).
     """
 
     def __init__(self, scale_factor: Optional[float] = None):

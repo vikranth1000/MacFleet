@@ -8,11 +8,10 @@ The worker runs on secondary nodes (e.g., MacBook Air) and handles:
 """
 
 import asyncio
+import logging
 import subprocess
 import time
 from typing import Optional
-
-from rich.console import Console
 
 from macfleet.comm.discovery import discover_master
 from macfleet.comm.grpc_service import ClusterControlClient
@@ -27,7 +26,7 @@ from macfleet.core.config import (
 from macfleet.core.node import BaseNode
 
 
-console = Console()
+logger = logging.getLogger(__name__)
 
 
 class Worker(BaseNode):
@@ -77,36 +76,36 @@ class Worker(BaseNode):
         self._running = True
         self._setup_signal_handlers()
 
-        console.print(f"[bold blue]Starting MacFleet Worker[/bold blue]")
-        console.print(f"  Hostname: {self.hostname}")
-        console.print(f"  IP Address: {self.ip_address}")
-        console.print(f"  Tensor Port: {self._node_config.tensor_port}")
+        logger.info("Starting MacFleet Worker")
+        logger.info("  Hostname: %s", self.hostname)
+        logger.info("  IP Address: %s", self.ip_address)
+        logger.info("  Tensor Port: %d", self._node_config.tensor_port)
 
         # Try to auto-discover master if enabled
         if self._auto_discover and not self._cluster_config.master_addr:
-            console.print("  [yellow]Searching for master node...[/yellow]")
+            logger.info("Searching for master node...")
             master = await asyncio.to_thread(discover_master, 10.0)
             if master:
                 self._cluster_config.master_addr = master.ip_address
                 self._cluster_config.master_port = master.grpc_port
-                console.print(
-                    f"  [green]Found master: {master.hostname} "
-                    f"({master.ip_address}:{master.grpc_port})[/green]"
+                logger.info(
+                    "Found master: %s (%s:%d)",
+                    master.hostname, master.ip_address, master.grpc_port,
                 )
             else:
-                console.print("  [red]No master found via discovery[/red]")
+                logger.warning("No master found via discovery")
 
-        console.print(f"  Master: {self.master_address}")
+        logger.info("  Master: %s", self.master_address)
 
         # Set up tensor transport
         await self._setup_transport()
         await self._transport.start_server()
-        console.print(f"  [green]Tensor transport started[/green]")
+        logger.info("Tensor transport started")
 
         # Set up service discovery
         await self._setup_discovery()
         if self._service_registry:
-            console.print(f"  [green]Service discovery started[/green]")
+            logger.info("Service discovery started")
 
         # Connect to coordinator
         await self._connect_to_coordinator()
@@ -114,11 +113,11 @@ class Worker(BaseNode):
         # Start heartbeat task
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        console.print(f"\n[bold green]Worker ready (rank={self.rank})[/bold green]")
+        logger.info("Worker ready (rank=%d)", self.rank)
 
     async def stop(self) -> None:
         """Stop the worker and disconnect from coordinator."""
-        console.print("\n[bold yellow]Shutting down worker...[/bold yellow]")
+        logger.info("Shutting down worker...")
 
         self._running = False
 
@@ -131,21 +130,23 @@ class Worker(BaseNode):
                 pass
             self._heartbeat_task = None
 
-        # Disconnect from coordinator
+        # Deregister from coordinator before disconnecting
         if self._grpc_client:
+            if self.rank >= 0:
+                self._grpc_client.deregister(self.rank, "Graceful shutdown")
             self._grpc_client.disconnect()
             self._grpc_client = None
-            console.print("  [yellow]Disconnected from coordinator[/yellow]")
+            logger.info("Deregistered and disconnected from coordinator")
 
         # Tear down transport
         await self._teardown_transport()
-        console.print("  [yellow]Tensor transport stopped[/yellow]")
+        logger.info("Tensor transport stopped")
 
         # Tear down discovery
         await self._teardown_discovery()
-        console.print("  [yellow]Service discovery stopped[/yellow]")
+        logger.info("Service discovery stopped")
 
-        console.print("[bold green]Worker shutdown complete[/bold green]")
+        logger.info("Worker shutdown complete")
 
     async def run(self) -> None:
         """Main run loop for the worker.
@@ -164,16 +165,19 @@ class Worker(BaseNode):
 
     async def _connect_to_coordinator(self) -> None:
         """Connect to the coordinator and register."""
-        console.print("  Connecting to coordinator...")
+        logger.info("Connecting to coordinator...")
 
         self._grpc_client = ClusterControlClient(
             master_addr=self._cluster_config.master_addr,
             master_port=self._cluster_config.master_port,
         )
 
-        # Try to connect with retries
-        max_retries = 10
-        retry_delay = 2.0
+        # Try to connect with exponential backoff
+        import random
+
+        max_retries = 15
+        base_delay = 1.0
+        max_delay = 30.0
 
         for attempt in range(max_retries):
             try:
@@ -201,27 +205,29 @@ class Worker(BaseNode):
                 self._master_tensor_addr = master_tensor_addr
                 self._master_tensor_port = master_tensor_port
 
-                console.print(
-                    f"  [green]Registered with master, assigned rank {rank}[/green]"
-                )
-                console.print(f"    Workload weight: {weight:.1%}")
-                console.print(f"    World size: {world_size}")
+                logger.info("Registered with master, assigned rank %d", rank)
+                logger.info("  Workload weight: %.1f%%", weight * 100)
+                logger.info("  World size: %d", world_size)
 
                 # Connect to master's tensor channel
                 await self._transport.connect(
                     master_tensor_addr,
                     master_tensor_port,
                 )
-                console.print(f"  [green]Connected to master tensor channel[/green]")
+                logger.info("Connected to master tensor channel")
 
                 return
 
             except Exception as e:
                 if attempt < max_retries - 1:
-                    console.print(
-                        f"  [yellow]Connection attempt {attempt + 1} failed: {e}[/yellow]"
+                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    delay *= 0.5 + random.random()  # Add jitter
+                    logger.warning(
+                        "Attempt %d/%d failed: %s (retry in %.1fs)",
+                        attempt + 1, max_retries, e, delay,
                     )
-                    await asyncio.sleep(retry_delay)
+                    self._grpc_client.disconnect()
+                    await asyncio.sleep(delay)
                 else:
                     raise RuntimeError(
                         f"Failed to connect to coordinator after {max_retries} attempts"
@@ -245,19 +251,19 @@ class Worker(BaseNode):
                 if new_weight != self._node_config.workload_weight:
                     old_weight = self._node_config.workload_weight
                     self._node_config.workload_weight = new_weight
-                    console.print(
-                        f"[yellow]Workload weight changed: "
-                        f"{old_weight:.1%} -> {new_weight:.1%}[/yellow]"
+                    logger.info(
+                        "Workload weight changed: %.1f%% -> %.1f%%",
+                        old_weight * 100, new_weight * 100,
                     )
 
                 # Check for stop signal
                 if should_stop:
-                    console.print("[yellow]Received stop signal from coordinator[/yellow]")
+                    logger.info("Received stop signal from coordinator")
                     self._running = False
                     break
 
             except Exception as e:
-                console.print(f"[red]Heartbeat failed: {e}[/red]")
+                logger.error("Heartbeat failed: %s", e)
                 # Try to reconnect
                 try:
                     await self._connect_to_coordinator()
@@ -272,8 +278,6 @@ class Worker(BaseNode):
         Returns one of: "nominal", "fair", "serious", "critical"
         """
         try:
-            # Try to get thermal state from powermetrics (requires sudo)
-            # For now, return nominal as fallback
             result = subprocess.run(
                 ["pmset", "-g", "therm"],
                 capture_output=True,

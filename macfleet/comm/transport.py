@@ -25,6 +25,9 @@ from macfleet.utils.tensor_utils import (
 RECV_BUFFER_SIZE = 1024 * 1024  # 1 MB receive buffer
 SEND_BUFFER_SIZE = 1024 * 1024  # 1 MB send buffer
 
+# Timeout for recv operations to avoid hanging on dead peers
+RECV_TIMEOUT = 120.0  # seconds
+
 
 class TensorTransport:
     """Async TCP transport for tensor data.
@@ -266,8 +269,10 @@ class TensorTransport:
                 raise ConnectionError(f"Not connected to {conn_key}")
             reader, _ = conn
 
-        # Read header
-        header_data = await reader.readexactly(HEADER_SIZE)
+        # Read header (with timeout to avoid hanging on dead peers)
+        header_data = await asyncio.wait_for(
+            reader.readexactly(HEADER_SIZE), timeout=RECV_TIMEOUT
+        )
         msg_type_code, dtype_code, n_dims, payload_size = struct.unpack(
             HEADER_FORMAT, header_data
         )
@@ -275,7 +280,9 @@ class TensorTransport:
 
         # Read shape + payload
         shape_size = n_dims * 4
-        remaining = await reader.readexactly(shape_size + payload_size)
+        remaining = await asyncio.wait_for(
+            reader.readexactly(shape_size + payload_size), timeout=RECV_TIMEOUT
+        )
         full_data = header_data + remaining
 
         tensor, msg_type = bytes_to_tensor(full_data, device)
@@ -328,8 +335,10 @@ class TensorTransport:
                 raise ConnectionError(f"Not connected to {conn_key}")
             reader, _ = conn
 
-        # Read header
-        header_data = await reader.readexactly(HEADER_SIZE)
+        # Read header (with timeout to avoid hanging on dead peers)
+        header_data = await asyncio.wait_for(
+            reader.readexactly(HEADER_SIZE), timeout=RECV_TIMEOUT
+        )
         msg_type_code, _, _, payload_size = struct.unpack(HEADER_FORMAT, header_data)
 
         if msg_type_code != MessageType.COMPRESSED_GRADIENT:
@@ -337,7 +346,9 @@ class TensorTransport:
 
         # Read compression metadata + payload
         metadata_size = 12
-        remaining = await reader.readexactly(metadata_size + payload_size)
+        remaining = await asyncio.wait_for(
+            reader.readexactly(metadata_size + payload_size), timeout=RECV_TIMEOUT
+        )
         full_data = header_data + remaining
 
         return deserialize_compressed_gradient(full_data, device)

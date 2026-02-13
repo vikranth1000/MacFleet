@@ -18,6 +18,9 @@ class TopKCompressor:
     Keeps only the top K% of gradient values by magnitude,
     accumulating the rest as residuals for future steps.
     This provides ~10x compression while preserving convergence.
+
+    Note: This class is NOT thread-safe. The internal residual state
+    must only be accessed from a single thread/coroutine (the training loop).
     """
 
     def __init__(

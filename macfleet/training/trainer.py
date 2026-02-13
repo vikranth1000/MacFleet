@@ -204,6 +204,13 @@ class Trainer:
             compression_pipeline=compression,
         )
 
+        # Broadcast initial parameters from rank 0 to ensure all nodes
+        # start with identical model weights (critical for correctness)
+        if self.distributed and self._world_size > 1:
+            console.print("  Broadcasting initial parameters from rank 0...")
+            await self._ddp_model.broadcast_parameters()
+            console.print("  [green]Parameters synchronized[/green]")
+
         # Create optimizer
         self._optimizer = self.optimizer_cls(
             self._ddp_model.parameters(),
@@ -231,9 +238,15 @@ class Trainer:
             pin_memory=False,
         )
 
+        # All nodes must run the same number of AllReduce steps per epoch
+        # to keep the TCP protocol synchronized. Use global batch count.
+        import math
+        self._steps_per_epoch = math.ceil(len(self.dataset) / self.training_config.batch_size)
+
         console.print(f"  Rank: {self._rank}, World size: {self._world_size}")
         console.print(f"  Local batch size: {local_batch_size}")
         console.print(f"  Samples per epoch: {len(self._sampler)}")
+        console.print(f"  Steps per epoch: {self._steps_per_epoch}")
         console.print("[bold green]Setup complete![/bold green]")
 
     async def _setup_distributed_master(self) -> None:
@@ -307,12 +320,15 @@ class Trainer:
         )
         self._grpc_server.start()
         console.print(f"  gRPC server started on port {self.cluster_config.master_port}")
-        console.print("  [yellow]Waiting for workers to register...[/yellow]")
+        min_workers = self.cluster_config.min_workers
+        console.print(f"  [yellow]Waiting for {min_workers} worker(s) to register...[/yellow]")
 
-        # Wait for at least one worker
-        await asyncio.wait_for(worker_event.wait(), timeout=120.0)
-        # Brief pause to allow any additional workers
-        await asyncio.sleep(2.0)
+        # Wait for min_workers to register
+        while len(registered_workers) < min_workers:
+            worker_event.clear()
+            await asyncio.wait_for(worker_event.wait(), timeout=120.0)
+        # Brief stabilization period for late workers
+        await asyncio.sleep(3.0)
 
         self._rank = 0
         self._world_size = cluster_state.world_size
@@ -322,30 +338,59 @@ class Trainer:
         for node in cluster_state.nodes.values():
             self._weights[node.rank] = node.workload_weight
 
-        # Accept TCP tensor connections from each worker using raw socket.
-        # This is reliable because loop.sock_accept is a proper awaitable
-        # that doesn't depend on asyncio server callbacks.
-        self._peer_info: dict[int, str] = {}
         for worker in registered_workers:
             console.print(
                 f"  [green]Worker registered: {worker.hostname} "
                 f"at {worker.ip_address}, rank {worker.rank}[/green]"
             )
-            console.print(f"  [yellow]Waiting for tensor connection from rank {worker.rank}...[/yellow]")
 
+        # Accept TCP tensor connections from all workers using raw socket.
+        # Workers may connect from a different IP than they registered with
+        # (e.g., link-local vs manual IP on the same Thunderbolt interface),
+        # so we match by IP first, then assign remaining connections by order.
+        console.print(f"  [yellow]Waiting for {len(registered_workers)} tensor connection(s)...[/yellow]")
+        accepted: list[tuple] = []  # [(reader, writer, addr), ...]
+        while len(accepted) < len(registered_workers):
             client_sock, addr = await asyncio.wait_for(
                 loop.sock_accept(server_sock), timeout=60.0,
             )
             client_sock.setblocking(False)
-
-            # Wrap accepted socket into asyncio streams
             reader, writer = await asyncio.open_connection(sock=client_sock)
+            accepted.append((reader, writer, addr))
+            console.print(f"  TCP connection from {addr[0]}:{addr[1]}")
 
+        # Map accepted connections to worker ranks.
+        # Try IP matching first, then assign remaining by arrival order.
+        self._peer_info: dict[int, str] = {}
+        ip_to_conn = {conn[2][0]: conn for conn in accepted}
+        unmatched_workers = []
+        matched_ips = set()
+
+        for worker in registered_workers:
+            conn_data = ip_to_conn.get(worker.ip_address)
+            if conn_data:
+                reader, writer, addr = conn_data
+                conn_key = f"{addr[0]}:{addr[1]}"
+                async with self._transport._lock:
+                    self._transport._connections[conn_key] = (reader, writer)
+                self._peer_info[worker.rank] = conn_key
+                matched_ips.add(addr[0])
+                console.print(f"  Mapped rank {worker.rank} -> {conn_key} (IP match)")
+            else:
+                unmatched_workers.append(worker)
+
+        # Assign remaining connections to unmatched workers by arrival order
+        unmatched_conns = [c for c in accepted if c[2][0] not in matched_ips]
+        for worker, conn_data in zip(unmatched_workers, unmatched_conns):
+            reader, writer, addr = conn_data
             conn_key = f"{addr[0]}:{addr[1]}"
             async with self._transport._lock:
                 self._transport._connections[conn_key] = (reader, writer)
             self._peer_info[worker.rank] = conn_key
-            console.print(f"  TCP tensor connection established with rank {worker.rank}")
+            console.print(
+                f"  Mapped rank {worker.rank} -> {conn_key} "
+                f"(registered as {worker.ip_address})"
+            )
 
     async def _setup_distributed_worker(self) -> None:
         """Set up worker node for distributed training.
@@ -546,13 +591,17 @@ class Trainer:
         """Train one epoch."""
         self._ddp_model.train()
 
+        # Sync BatchNorm buffers from rank 0 at start of each epoch
+        if self.distributed and self._world_size > 1:
+            await self._ddp_model.sync_buffers()
+
         total_loss = 0.0
         total_correct = 0
         total_samples = 0
         total_compute_time = 0.0
         total_comm_time = 0.0
 
-        num_batches = len(self._dataloader)
+        num_batches = self._steps_per_epoch
 
         with Progress(
             SpinnerColumn(),
@@ -563,7 +612,18 @@ class Trainer:
         ) as progress:
             task = progress.add_task(f"Epoch {epoch + 1}", total=num_batches)
 
-            for batch_idx, (inputs, targets) in enumerate(self._dataloader):
+            # Use an iterator that cycles so shorter dataloaders don't run out
+            # before all nodes have completed the synchronized step count.
+            data_iter = iter(self._dataloader)
+
+            for batch_idx in range(num_batches):
+                try:
+                    inputs, targets = next(data_iter)
+                except StopIteration:
+                    # Dataloader exhausted — cycle back to start
+                    data_iter = iter(self._dataloader)
+                    inputs, targets = next(data_iter)
+
                 # Move to device
                 inputs = inputs.to(self._device)
                 targets = targets.to(self._device)

@@ -9,6 +9,8 @@ The coordinator runs on the master node (MacBook Pro) and handles:
 """
 
 import asyncio
+import logging
+import threading
 import time
 from typing import Callable, Optional
 
@@ -28,7 +30,8 @@ from macfleet.core.config import (
 from macfleet.core.node import BaseNode
 
 
-console = Console()
+logger = logging.getLogger(__name__)
+console = Console()  # Keep for Rich table output only
 
 
 class Coordinator(BaseNode):
@@ -66,6 +69,7 @@ class Coordinator(BaseNode):
         self._servicer: Optional[ClusterControlServicer] = None
         self._heartbeat_tracker: dict[int, float] = {}  # rank -> last_heartbeat_time
         self._throughput_tracker: dict[int, float] = {}  # rank -> samples/sec
+        self._state_lock = threading.Lock()  # Protects heartbeat/throughput trackers and cluster state
         self._on_node_registered: Optional[Callable[[NodeConfig], None]] = None
         self._on_node_lost: Optional[Callable[[int], None]] = None
 
@@ -103,21 +107,21 @@ class Coordinator(BaseNode):
         self._running = True
         self._setup_signal_handlers()
 
-        console.print(f"[bold blue]Starting MacFleet Coordinator[/bold blue]")
-        console.print(f"  Hostname: {self.hostname}")
-        console.print(f"  IP Address: {self.ip_address}")
-        console.print(f"  gRPC Port: {self._cluster_config.master_port}")
-        console.print(f"  Tensor Port: {self._node_config.tensor_port}")
+        logger.info("Starting MacFleet Coordinator")
+        logger.info("  Hostname: %s", self.hostname)
+        logger.info("  IP Address: %s", self.ip_address)
+        logger.info("  gRPC Port: %d", self._cluster_config.master_port)
+        logger.info("  Tensor Port: %d", self._node_config.tensor_port)
 
         # Set up tensor transport
         await self._setup_transport()
         await self._transport.start_server()
-        console.print(f"  [green]Tensor transport started[/green]")
+        logger.info("Tensor transport started")
 
         # Set up service discovery
         await self._setup_discovery()
         if self._service_registry:
-            console.print(f"  [green]Service discovery started[/green]")
+            logger.info("Service discovery started")
 
         # Create gRPC servicer and server
         self._servicer = ClusterControlServicer(
@@ -126,6 +130,7 @@ class Coordinator(BaseNode):
             tensor_port=self._node_config.tensor_port,
             on_register=self._handle_registration,
             on_heartbeat=self._handle_heartbeat,
+            on_deregister=self._handle_deregistration,
         )
 
         self._grpc_server = GRPCServer(
@@ -134,13 +139,12 @@ class Coordinator(BaseNode):
             port=self._cluster_config.master_port,
         )
         self._grpc_server.start()
-        console.print(f"  [green]gRPC server started[/green]")
-
-        console.print(f"\n[bold green]Coordinator ready, waiting for workers...[/bold green]")
+        logger.info("gRPC server started")
+        logger.info("Coordinator ready, waiting for workers...")
 
     async def stop(self) -> None:
         """Stop the coordinator services."""
-        console.print("\n[bold yellow]Shutting down coordinator...[/bold yellow]")
+        logger.info("Shutting down coordinator...")
 
         self._running = False
 
@@ -148,17 +152,17 @@ class Coordinator(BaseNode):
         if self._grpc_server:
             self._grpc_server.stop()
             self._grpc_server = None
-            console.print("  [yellow]gRPC server stopped[/yellow]")
+            logger.info("gRPC server stopped")
 
         # Tear down transport
         await self._teardown_transport()
-        console.print("  [yellow]Tensor transport stopped[/yellow]")
+        logger.info("Tensor transport stopped")
 
         # Tear down discovery
         await self._teardown_discovery()
-        console.print("  [yellow]Service discovery stopped[/yellow]")
+        logger.info("Service discovery stopped")
 
-        console.print("[bold green]Coordinator shutdown complete[/bold green]")
+        logger.info("Coordinator shutdown complete")
 
     async def run(self) -> None:
         """Main run loop for the coordinator.
@@ -182,24 +186,41 @@ class Coordinator(BaseNode):
             await self.stop()
 
     def _handle_registration(self, node: NodeConfig) -> None:
-        """Handle a new node registration."""
-        console.print(
-            f"\n[bold green]Worker registered: {node.hostname} "
-            f"at {node.ip_address}, rank {node.rank}[/bold green]"
+        """Handle a new node registration.
+
+        Called from gRPC thread pool — must use _state_lock for shared state.
+        """
+        logger.info(
+            "Worker registered: %s at %s, rank %d",
+            node.hostname, node.ip_address, node.rank,
         )
-        console.print(f"  GPU Cores: {node.gpu_cores}")
-        console.print(f"  RAM: {node.ram_gb} GB")
-        console.print(f"  Workload Weight: {node.workload_weight:.2%}")
+        logger.info("  GPU Cores: %d, RAM: %d GB, Weight: %.2f%%",
+                     node.gpu_cores, node.ram_gb, node.workload_weight * 100)
 
-        # Initialize heartbeat tracking
-        self._heartbeat_tracker[node.rank] = time.time()
-        self._throughput_tracker[node.rank] = 0.0
+        with self._state_lock:
+            # Initialize heartbeat tracking
+            self._heartbeat_tracker[node.rank] = time.time()
+            self._throughput_tracker[node.rank] = 0.0
 
-        # Recalculate master's weight
-        self._recalculate_weights()
+            # Recalculate master's weight
+            self._recalculate_weights()
 
         if self._on_node_registered:
             self._on_node_registered(node)
+
+    def _handle_deregistration(self, rank: int, reason: str) -> None:
+        """Handle a graceful node deregistration.
+
+        Called from gRPC thread pool — must use _state_lock for shared state.
+        """
+        with self._state_lock:
+            self._heartbeat_tracker.pop(rank, None)
+            self._throughput_tracker.pop(rank, None)
+
+        logger.info("Node deregistered: rank=%d (%s)", rank, reason)
+
+        if self._on_node_lost:
+            self._on_node_lost(rank)
 
     def _handle_heartbeat(
         self,
@@ -207,17 +228,21 @@ class Coordinator(BaseNode):
         throughput: float,
         thermal_state: str,
     ) -> None:
-        """Handle a heartbeat from a worker."""
-        self._heartbeat_tracker[rank] = time.time()
-        self._throughput_tracker[rank] = throughput
+        """Handle a heartbeat from a worker.
+
+        Called from gRPC thread pool — must use _state_lock for shared state.
+        """
+        with self._state_lock:
+            self._heartbeat_tracker[rank] = time.time()
+            self._throughput_tracker[rank] = throughput
 
         # Check for thermal throttling
         if thermal_state in ("serious", "critical"):
             node = self._cluster_state.get_node(rank)
             if node:
-                console.print(
-                    f"[yellow]Node {rank} ({node.hostname}) "
-                    f"thermal state: {thermal_state}[/yellow]"
+                logger.warning(
+                    "Node %d (%s) thermal state: %s",
+                    rank, node.hostname, thermal_state,
                 )
 
     async def _check_heartbeats(self) -> None:
@@ -226,33 +251,43 @@ class Coordinator(BaseNode):
         timeout = self._cluster_config.heartbeat_timeout_sec
         lost_ranks = []
 
-        for rank, last_time in list(self._heartbeat_tracker.items()):
-            if rank == 0:  # Skip master
-                continue
+        with self._state_lock:
+            for rank, last_time in list(self._heartbeat_tracker.items()):
+                if rank == 0:  # Skip master
+                    continue
 
-            if now - last_time > timeout:
-                lost_ranks.append(rank)
+                if now - last_time > timeout:
+                    lost_ranks.append(rank)
 
+            for rank in lost_ranks:
+                node = self._cluster_state.get_node(rank)
+                if node:
+                    logger.error("Node lost: rank=%d (%s)", rank, node.hostname)
+
+                # Remove from tracking
+                self._heartbeat_tracker.pop(rank, None)
+                self._throughput_tracker.pop(rank, None)
+                self._cluster_state.remove_node(rank)
+
+                # Return rank to servicer for reuse
+                if self._servicer:
+                    with self._servicer._lock:
+                        self._servicer._free_ranks.append(rank)
+                        self._servicer._base_weights.pop(rank, None)
+
+                # Recalculate weights
+                self._recalculate_weights()
+
+        # Callbacks outside lock
         for rank in lost_ranks:
-            node = self._cluster_state.get_node(rank)
-            if node:
-                console.print(
-                    f"[bold red]Node lost: rank={rank} ({node.hostname})[/bold red]"
-                )
-
-            # Remove from tracking
-            self._heartbeat_tracker.pop(rank, None)
-            self._throughput_tracker.pop(rank, None)
-            self._cluster_state.remove_node(rank)
-
-            # Recalculate weights
-            self._recalculate_weights()
-
             if self._on_node_lost:
                 self._on_node_lost(rank)
 
     def _recalculate_weights(self) -> None:
-        """Recalculate workload weights based on GPU cores."""
+        """Recalculate workload weights based on GPU cores.
+
+        Caller must hold _state_lock.
+        """
         total_cores = sum(n.gpu_cores for n in self._cluster_state.nodes.values())
         if total_cores == 0:
             return
@@ -269,18 +304,20 @@ class Coordinator(BaseNode):
         table.add_column("Weight", justify="right")
         table.add_column("Throughput", justify="right")
 
-        for node in sorted(
-            self._cluster_state.nodes.values(),
-            key=lambda n: n.rank,
-        ):
-            throughput = self._throughput_tracker.get(node.rank, 0.0)
-            table.add_row(
-                str(node.rank),
-                node.hostname,
-                str(node.gpu_cores),
-                f"{node.workload_weight:.1%}",
-                f"{throughput:.1f} samples/s" if throughput > 0 else "-",
+        with self._state_lock:
+            nodes = sorted(
+                self._cluster_state.nodes.values(),
+                key=lambda n: n.rank,
             )
+            for node in nodes:
+                throughput = self._throughput_tracker.get(node.rank, 0.0)
+                table.add_row(
+                    str(node.rank),
+                    node.hostname,
+                    str(node.gpu_cores),
+                    f"{node.workload_weight:.1%}",
+                    f"{throughput:.1f} samples/s" if throughput > 0 else "-",
+                )
 
         console.print(table)
 

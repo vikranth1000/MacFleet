@@ -5,6 +5,7 @@ including network setup, tensor transport, and service discovery.
 """
 
 import asyncio
+import logging
 import signal
 import sys
 from abc import ABC, abstractmethod
@@ -27,6 +28,9 @@ from macfleet.utils.network import (
     get_memory_bandwidth,
     get_memory_info,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class BaseNode(ABC):
@@ -155,7 +159,7 @@ class BaseNode(ABC):
                     ram_gb=memory_info.get("total_gb", 16),
                 )
             except Exception as e:
-                print(f"  Warning: Service discovery registration failed: {e}")
+                logger.warning("Service discovery registration failed: %s", e)
                 self._service_registry = None
 
     async def _teardown_transport(self) -> None:
@@ -174,11 +178,23 @@ class BaseNode(ABC):
             self._service_registry = None
 
     def _setup_signal_handlers(self) -> None:
-        """Set up signal handlers for graceful shutdown."""
+        """Set up signal handlers for graceful shutdown.
+
+        Uses loop.call_soon_threadsafe to safely set the asyncio Event
+        from a signal handler context (which runs outside the event loop).
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
         def signal_handler(sig, frame):
-            print(f"\nReceived signal {sig}, shutting down...")
+            logger.info("Received signal %s, shutting down...", sig)
             self._running = False
-            self._shutdown_event.set()
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(self._shutdown_event.set)
+            else:
+                self._shutdown_event.set()
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)

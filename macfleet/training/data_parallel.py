@@ -106,41 +106,62 @@ class MacFleetDDP(nn.Module):
         )
         return self._compression.decompress(compressed)
 
+    def _build_buckets(self) -> list[list[nn.Parameter]]:
+        """Group parameters into communication buckets.
+
+        Parameters are grouped in reverse order (matching PyTorch DDP convention,
+        since later layers finish backward first) until bucket size is reached.
+        """
+        buckets: list[list[nn.Parameter]] = []
+        current_bucket: list[nn.Parameter] = []
+        current_size = 0
+
+        for param in reversed(self._param_list):
+            if param.grad is None:
+                continue
+            param_bytes = param.grad.numel() * param.grad.element_size()
+            if current_bucket and current_size + param_bytes > self._bucket_size_bytes:
+                buckets.append(current_bucket)
+                current_bucket = []
+                current_size = 0
+            current_bucket.append(param)
+            current_size += param_bytes
+
+        if current_bucket:
+            buckets.append(current_bucket)
+
+        return buckets
+
     async def sync_gradients(self) -> None:
         """Synchronize gradients across all nodes using AllReduce.
 
         Call this after loss.backward() and before optimizer.step().
+        Gradients are grouped into buckets for overlapped communication.
         """
         if self._group.world_size == 1:
             return
 
-        # Collect all gradients
-        grads = []
-        for param in self._param_list:
-            if param.grad is not None:
-                grads.append(param.grad.data)
-
-        if not grads:
+        buckets = self._build_buckets()
+        if not buckets:
             return
 
-        # Flatten all gradients into a single tensor for efficiency
-        flat_grads = torch.cat([g.flatten() for g in grads])
-        del grads  # Free the list of references
+        for bucket in buckets:
+            # Flatten bucket gradients
+            flat = torch.cat([p.grad.data.flatten() for p in bucket])
 
-        # AllReduce
-        reduced = await self._allreduce(flat_grads, op="mean")
-        del flat_grads  # Free the original flat tensor
+            # AllReduce this bucket
+            reduced = await self._allreduce(flat, op="mean")
+            del flat
 
-        # Unflatten and copy back
-        offset = 0
-        for param in self._param_list:
-            if param.grad is not None:
+            # Copy back
+            offset = 0
+            for param in bucket:
                 numel = param.grad.numel()
                 param.grad.data.copy_(
                     reduced[offset:offset + numel].view_as(param.grad)
                 )
                 offset += numel
-        del reduced
+            del reduced
 
     def sync_gradients_sync(self) -> None:
         """Synchronous wrapper for sync_gradients."""

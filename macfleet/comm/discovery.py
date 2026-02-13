@@ -5,6 +5,7 @@ using mDNS/DNS-SD (Bonjour on macOS).
 """
 
 import socket
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -124,6 +125,7 @@ class ServiceRegistry:
         self._browser: Optional[ServiceBrowser] = None
         self._listener: Optional[MacFleetServiceListener] = None
         self._discovered_nodes: dict[str, DiscoveredNode] = {}
+        self._nodes_lock = threading.Lock()  # Protects _discovered_nodes from Zeroconf threads
 
     def start(self) -> None:
         """Start the zeroconf instance (synchronous)."""
@@ -151,7 +153,8 @@ class ServiceRegistry:
             self._zeroconf = None
 
         self._async_zeroconf = None
-        self._discovered_nodes.clear()
+        with self._nodes_lock:
+            self._discovered_nodes.clear()
 
     async def async_stop(self) -> None:
         """Stop the zeroconf instance and cleanup (async-safe)."""
@@ -168,7 +171,8 @@ class ServiceRegistry:
             self._async_zeroconf = None
             self._zeroconf = None
 
-        self._discovered_nodes.clear()
+        with self._nodes_lock:
+            self._discovered_nodes.clear()
 
     def _build_service_info(
         self,
@@ -281,19 +285,22 @@ class ServiceRegistry:
         if not self._zeroconf:
             self.start()
 
-        # Create listener with node tracking
+        # Create listener with thread-safe node tracking
         def track_add(node: DiscoveredNode) -> None:
-            self._discovered_nodes[node.hostname] = node
+            with self._nodes_lock:
+                self._discovered_nodes[node.hostname] = node
             if on_add:
                 on_add(node)
 
         def track_remove(hostname: str) -> None:
-            self._discovered_nodes.pop(hostname, None)
+            with self._nodes_lock:
+                self._discovered_nodes.pop(hostname, None)
             if on_remove:
                 on_remove(hostname)
 
         def track_update(node: DiscoveredNode) -> None:
-            self._discovered_nodes[node.hostname] = node
+            with self._nodes_lock:
+                self._discovered_nodes[node.hostname] = node
             if on_update:
                 on_update(node)
 
@@ -318,7 +325,8 @@ class ServiceRegistry:
 
     def get_discovered_nodes(self) -> list[DiscoveredNode]:
         """Get list of currently discovered nodes."""
-        return list(self._discovered_nodes.values())
+        with self._nodes_lock:
+            return list(self._discovered_nodes.values())
 
     def find_master(self, timeout: float = 5.0) -> Optional[DiscoveredNode]:
         """Find the master node on the network.

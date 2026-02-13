@@ -59,6 +59,20 @@ class NodeConfig:
     rank: int = -1
     workload_weight: float = 0.0
 
+    def __post_init__(self) -> None:
+        if not self.hostname:
+            raise ValueError("hostname must not be empty")
+        if not self.ip_address:
+            raise ValueError("ip_address must not be empty")
+        if self.gpu_cores < 0:
+            raise ValueError(f"gpu_cores must be non-negative, got {self.gpu_cores}")
+        if self.ram_gb < 0:
+            raise ValueError(f"ram_gb must be non-negative, got {self.ram_gb}")
+        if self.memory_bandwidth_gbps < 0:
+            raise ValueError(f"memory_bandwidth_gbps must be non-negative, got {self.memory_bandwidth_gbps}")
+        if not (1 <= self.tensor_port <= 65535):
+            raise ValueError(f"tensor_port must be 1-65535, got {self.tensor_port}")
+
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
@@ -74,8 +88,9 @@ class NodeConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "NodeConfig":
-        """Create from dictionary."""
-        return cls(**data)
+        """Create from dictionary, ignoring unknown keys."""
+        known = {f.name for f in __import__("dataclasses").fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass
@@ -101,6 +116,24 @@ class ClusterConfig:
     discovery_enabled: bool = True
     service_name: str = "_macfleet._tcp.local."
     host: Optional[str] = None
+    min_workers: int = 1  # Minimum workers required before training starts
+
+    def __post_init__(self) -> None:
+        if not (1 <= self.master_port <= 65535):
+            raise ValueError(f"master_port must be 1-65535, got {self.master_port}")
+        if not (1 <= self.tensor_port <= 65535):
+            raise ValueError(f"tensor_port must be 1-65535, got {self.tensor_port}")
+        if self.heartbeat_interval_sec <= 0:
+            raise ValueError(f"heartbeat_interval_sec must be positive, got {self.heartbeat_interval_sec}")
+        if self.heartbeat_timeout_sec <= 0:
+            raise ValueError(f"heartbeat_timeout_sec must be positive, got {self.heartbeat_timeout_sec}")
+        if self.heartbeat_timeout_sec <= self.heartbeat_interval_sec:
+            raise ValueError(
+                f"heartbeat_timeout_sec ({self.heartbeat_timeout_sec}) must be greater than "
+                f"heartbeat_interval_sec ({self.heartbeat_interval_sec})"
+            )
+        if self.min_workers < 1:
+            raise ValueError(f"min_workers must be >= 1, got {self.min_workers}")
 
     @property
     def master_grpc_address(self) -> str:
@@ -122,8 +155,9 @@ class ClusterConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ClusterConfig":
-        """Create from dictionary."""
-        data = data.copy()
+        """Create from dictionary, ignoring unknown keys."""
+        known = {f.name for f in __import__("dataclasses").fields(cls)}
+        data = {k: v for k, v in data.items() if k in known}
         data["role"] = NodeRole(data["role"])
         return cls(**data)
 
@@ -155,6 +189,22 @@ class TrainingConfig:
     dynamic_rebalance_threshold: float = 0.15
     device: str = "mps"
 
+    def __post_init__(self) -> None:
+        if self.epochs < 1:
+            raise ValueError(f"epochs must be >= 1, got {self.epochs}")
+        if self.batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {self.batch_size}")
+        if self.learning_rate <= 0:
+            raise ValueError(f"learning_rate must be positive, got {self.learning_rate}")
+        if not (0.0 < self.topk_ratio <= 1.0):
+            raise ValueError(f"topk_ratio must be in (0.0, 1.0], got {self.topk_ratio}")
+        if self.checkpoint_every < 1:
+            raise ValueError(f"checkpoint_every must be >= 1, got {self.checkpoint_every}")
+        if self.calibration_steps < 1:
+            raise ValueError(f"calibration_steps must be >= 1, got {self.calibration_steps}")
+        if self.device not in ("mps", "cpu", "cuda"):
+            raise ValueError(f"device must be 'mps', 'cpu', or 'cuda', got '{self.device}'")
+
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
@@ -172,8 +222,9 @@ class TrainingConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "TrainingConfig":
-        """Create from dictionary."""
-        data = data.copy()
+        """Create from dictionary, ignoring unknown keys."""
+        known = {f.name for f in __import__("dataclasses").fields(cls)}
+        data = {k: v for k, v in data.items() if k in known}
         data["compression"] = CompressionType(data["compression"])
         return cls(**data)
 

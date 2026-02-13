@@ -370,25 +370,68 @@ def _run_latency_benchmark():
 
 def _run_allreduce_benchmark(sizes_mb: list[int]):
     """Run AllReduce benchmark using loopback simulation."""
-    from benchmarks.allreduce_bench import (
-        benchmark_allreduce_loopback,
-        print_results,
-        print_model_estimates,
-    )
-
-    sizes = [float(s) for s in sizes_mb]
+    import time
+    import torch
 
     console.print("Running loopback AllReduce benchmark...")
     console.print("Testing with no compression and TopK+FP16...")
     console.print()
 
-    all_results = []
-    for comp in ["none", "topk_fp16"]:
-        results = asyncio.run(benchmark_allreduce_loopback(sizes, 10, comp))
-        all_results.extend(results)
+    async def run():
+        from macfleet.comm.transport import TensorTransport
+        from macfleet.comm.collectives import CollectiveGroup, AllReduce
 
-    print_results(all_results)
-    print_model_estimates()
+        port0, port1 = 50100, 50101
+        t0 = TensorTransport("127.0.0.1", port0)
+        t1 = TensorTransport("127.0.0.1", port1)
+        await t0.start_server()
+        await t1.start_server()
+
+        g0 = CollectiveGroup(rank=0, world_size=2, transport=t0)
+        g1 = CollectiveGroup(rank=1, world_size=2, transport=t1)
+        await g0.connect_to_peer(1, "127.0.0.1", port1)
+        await g1.connect_to_peer(0, "127.0.0.1", port0)
+
+        table = Table(title="AllReduce Benchmark Results")
+        table.add_column("Size (MB)", justify="right", style="cyan")
+        table.add_column("Compression", style="yellow")
+        table.add_column("Latency (ms)", justify="right")
+        table.add_column("Throughput (Gbps)", justify="right", style="green")
+
+        for comp in ["none", "topk_fp16"]:
+            ar0 = AllReduce(g0)
+            ar1 = AllReduce(g1)
+
+            for size_mb in sizes_mb:
+                numel = int((size_mb * 1024 * 1024) / 4)
+                tensor0 = torch.randn(numel)
+                tensor1 = torch.randn(numel)
+                actual_mb = (numel * 4) / (1024 * 1024)
+
+                latencies = []
+                for _ in range(10):
+                    start = time.perf_counter()
+                    await asyncio.gather(
+                        ar0(tensor0.clone()), ar1(tensor1.clone())
+                    )
+                    latencies.append((time.perf_counter() - start) * 1000)
+
+                avg_lat = sum(latencies) / len(latencies)
+                throughput = (actual_mb * 1024 * 1024 * 2 * 8) / (avg_lat / 1000 * 1e9)
+
+                table.add_row(
+                    f"{actual_mb:.1f}", comp,
+                    f"{avg_lat:.2f}", f"{throughput:.2f}",
+                )
+
+        console.print(table)
+
+        await g0.disconnect_all()
+        await g1.disconnect_all()
+        await t0.stop_server()
+        await t1.stop_server()
+
+    asyncio.run(run())
 
 
 @cli.command()

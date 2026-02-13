@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "macfleet"
-version = "0.1.0"
+version = "0.2.0"
 description = "Distributed ML training across Apple Silicon Macs over Thunderbolt"
 readme = "README.md"
 license = {text = "MIT"}
@@ -32,12 +32,16 @@ dependencies = [
     "zeroconf>=0.131.0",
     "rich>=13.0.0",
     "click>=8.1.0",
+    "numpy>=1.24.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.23.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+    "pytest-cov>=4.1.0",
 ]
 examples = [
     "torchvision>=0.16.0",
@@ -45,7 +49,7 @@ examples = [
 ]
 
 [project.scripts]
-macfleet = "cli.main:cli"
+macfleet = "macfleet.cli.main:cli"
 
 [project.urls]
 Homepage = "https://github.com/macfleet/macfleet"
@@ -55,8 +59,15 @@ Issues = "https://github.com/macfleet/macfleet/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["macfleet*", "cli*"]
+include = ["macfleet*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]

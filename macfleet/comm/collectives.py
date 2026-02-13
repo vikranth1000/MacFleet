@@ -235,18 +235,26 @@ class AllReduce:
             raise RuntimeError("Ring topology not fully connected")
 
         # Phase 1: Scatter-reduce
+        # Use asyncio.gather for concurrent send/recv to avoid deadlock
+        # when N>2 (sequential send-then-recv fills TCP buffers and stalls).
         for step in range(world_size - 1):
             send_idx = (rank - step) % world_size
             recv_idx = (rank - step - 1) % world_size
 
-            # Send chunk to right, receive from left
             send_chunk = chunks[send_idx].cpu()
-            await self._group._transport.send_tensor(
-                send_chunk, right_conn, MessageType.TENSOR_GRADIENT
-            )
 
-            recv_chunk, _ = await self._group._transport.recv_tensor(
-                left_conn, str(tensor.device)
+            async def _send_scatter(chunk=send_chunk):
+                await self._group._transport.send_tensor(
+                    chunk, right_conn, MessageType.TENSOR_GRADIENT
+                )
+
+            async def _recv_scatter():
+                return await self._group._transport.recv_tensor(
+                    left_conn, str(tensor.device)
+                )
+
+            _, (recv_chunk, _) = await asyncio.gather(
+                _send_scatter(), _recv_scatter()
             )
 
             # Reduce
@@ -261,12 +269,19 @@ class AllReduce:
             recv_idx = (rank - step) % world_size
 
             send_chunk = chunks[send_idx].cpu()
-            await self._group._transport.send_tensor(
-                send_chunk, right_conn, MessageType.TENSOR_GRADIENT
-            )
 
-            recv_chunk, _ = await self._group._transport.recv_tensor(
-                left_conn, str(tensor.device)
+            async def _send_gather(chunk=send_chunk):
+                await self._group._transport.send_tensor(
+                    chunk, right_conn, MessageType.TENSOR_GRADIENT
+                )
+
+            async def _recv_gather():
+                return await self._group._transport.recv_tensor(
+                    left_conn, str(tensor.device)
+                )
+
+            _, (recv_chunk, _) = await asyncio.gather(
+                _send_gather(), _recv_gather()
             )
 
             chunks[recv_idx] = recv_chunk

@@ -1,6 +1,12 @@
 """MacFleet: Distributed ML training across Apple Silicon Macs over Thunderbolt."""
 
-__version__ = "0.1.0"
+import logging
+
+__version__ = "0.2.0"
+
+# Configure a NullHandler so library users can control logging.
+# Applications (CLI, scripts) should call logging.basicConfig() to see output.
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 from macfleet.core.config import (
     ClusterConfig,

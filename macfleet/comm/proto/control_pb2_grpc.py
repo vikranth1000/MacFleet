@@ -65,6 +65,11 @@ class ClusterControlStub(object):
                 request_serializer=control__pb2.Empty.SerializeToString,
                 response_deserializer=control__pb2.ClusterStateProto.FromString,
                 _registered_method=True)
+        self.Deregister = channel.unary_unary(
+                '/macfleet.ClusterControl/Deregister',
+                request_serializer=control__pb2.DeregisterRequest.SerializeToString,
+                response_deserializer=control__pb2.Ack.FromString,
+                _registered_method=True)
         self.Broadcast = channel.unary_unary(
                 '/macfleet.ClusterControl/Broadcast',
                 request_serializer=control__pb2.BroadcastRequest.SerializeToString,
@@ -118,6 +123,13 @@ class ClusterControlServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Deregister(self, request, context):
+        """Graceful deregistration from cluster
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Broadcast(self, request, context):
         """Broadcast message to all nodes
         """
@@ -157,6 +169,11 @@ def add_ClusterControlServicer_to_server(servicer, server):
                     servicer.GetClusterState,
                     request_deserializer=control__pb2.Empty.FromString,
                     response_serializer=control__pb2.ClusterStateProto.SerializeToString,
+            ),
+            'Deregister': grpc.unary_unary_rpc_method_handler(
+                    servicer.Deregister,
+                    request_deserializer=control__pb2.DeregisterRequest.FromString,
+                    response_serializer=control__pb2.Ack.SerializeToString,
             ),
             'Broadcast': grpc.unary_unary_rpc_method_handler(
                     servicer.Broadcast,
@@ -327,6 +344,33 @@ class ClusterControl(object):
             '/macfleet.ClusterControl/GetClusterState',
             control__pb2.Empty.SerializeToString,
             control__pb2.ClusterStateProto.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Deregister(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/macfleet.ClusterControl/Deregister',
+            control__pb2.DeregisterRequest.SerializeToString,
+            control__pb2.Ack.FromString,
             options,
             channel_credentials,
             insecure,
