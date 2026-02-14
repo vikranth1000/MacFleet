@@ -732,7 +732,8 @@ class Trainer:
         table.add_row("Compute Time", f"{metrics['compute_time_ms']:.0f} ms")
         table.add_row("Comm Time", f"{metrics['comm_time_ms']:.0f} ms")
 
-        comm_overhead = metrics['comm_time_ms'] / (metrics['compute_time_ms'] + metrics['comm_time_ms']) * 100
+        total_time = metrics['compute_time_ms'] + metrics['comm_time_ms']
+        comm_overhead = metrics['comm_time_ms'] / total_time * 100 if total_time > 0 else 0.0
         table.add_row("Comm Overhead", f"{comm_overhead:.1f}%")
 
         console.print(table)
@@ -764,7 +765,7 @@ class Trainer:
 
     def load_checkpoint(self, path: str) -> None:
         """Load a training checkpoint."""
-        checkpoint = torch.load(path, map_location=self._device)
+        checkpoint = torch.load(path, map_location=self._device, weights_only=False)
 
         self._ddp_model.load_state_dict(checkpoint["model_state_dict"])
         self._optimizer.load_state_dict(checkpoint["optimizer_state_dict"])

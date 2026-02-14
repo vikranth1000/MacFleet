@@ -81,7 +81,9 @@ class TensorTransport:
             try:
                 while True:
                     # Read header
-                    header_data = await reader.readexactly(HEADER_SIZE)
+                    header_data = await asyncio.wait_for(
+                        reader.readexactly(HEADER_SIZE), timeout=RECV_TIMEOUT
+                    )
                     msg_type_code, dtype_code, n_dims, payload_size = struct.unpack(
                         HEADER_FORMAT, header_data
                     )
@@ -90,7 +92,10 @@ class TensorTransport:
                     if msg_type == MessageType.COMPRESSED_GRADIENT:
                         # Read compression metadata + payload
                         metadata_size = 12  # orig_numel, topk_count, orig_dtype
-                        remaining = await reader.readexactly(metadata_size + payload_size)
+                        remaining = await asyncio.wait_for(
+                            reader.readexactly(metadata_size + payload_size),
+                            timeout=RECV_TIMEOUT,
+                        )
                         full_data = header_data + remaining
 
                         indices, values, orig_numel, orig_dtype = deserialize_compressed_gradient(
@@ -104,14 +109,17 @@ class TensorTransport:
                     else:
                         # Read shape + payload
                         shape_size = n_dims * 4
-                        remaining = await reader.readexactly(shape_size + payload_size)
+                        remaining = await asyncio.wait_for(
+                            reader.readexactly(shape_size + payload_size),
+                            timeout=RECV_TIMEOUT,
+                        )
                         full_data = header_data + remaining
 
                         tensor, msg_type = bytes_to_tensor(full_data)
                         await on_receive(tensor, msg_type, addr)
 
-            except (asyncio.IncompleteReadError, ConnectionResetError):
-                # Client disconnected
+            except (asyncio.IncompleteReadError, ConnectionResetError, TimeoutError):
+                # Client disconnected or timed out
                 pass
             finally:
                 async with self._lock:

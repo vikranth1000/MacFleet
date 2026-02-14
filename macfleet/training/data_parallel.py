@@ -164,8 +164,21 @@ class MacFleetDDP(nn.Module):
             del reduced
 
     def sync_gradients_sync(self) -> None:
-        """Synchronous wrapper for sync_gradients."""
-        asyncio.get_event_loop().run_until_complete(self.sync_gradients())
+        """Synchronous wrapper for sync_gradients.
+
+        Only usable from a non-async context. For use within the async
+        trainer, call sync_gradients() directly with await.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            raise RuntimeError(
+                "sync_gradients_sync() cannot be called from a running event loop. "
+                "Use 'await sync_gradients()' instead."
+            )
+        except RuntimeError as e:
+            if "no running event loop" not in str(e).lower():
+                raise
+        asyncio.run(self.sync_gradients())
 
     async def sync_buffers(self) -> None:
         """Synchronize buffers (e.g., BatchNorm running stats) from rank 0.

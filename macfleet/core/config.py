@@ -108,7 +108,7 @@ class ClusterConfig:
         service_name: Bonjour service name for discovery.
     """
     role: NodeRole
-    master_addr: str = "10.0.0.1"
+    master_addr: str = ""
     master_port: int = DEFAULT_GRPC_PORT
     tensor_port: int = DEFAULT_TENSOR_PORT
     heartbeat_interval_sec: float = DEFAULT_HEARTBEAT_INTERVAL_SEC
@@ -151,6 +151,8 @@ class ClusterConfig:
             "heartbeat_timeout_sec": self.heartbeat_timeout_sec,
             "discovery_enabled": self.discovery_enabled,
             "service_name": self.service_name,
+            "host": self.host,
+            "min_workers": self.min_workers,
         }
 
     @classmethod
@@ -158,7 +160,8 @@ class ClusterConfig:
         """Create from dictionary, ignoring unknown keys."""
         known = {f.name for f in __import__("dataclasses").fields(cls)}
         data = {k: v for k, v in data.items() if k in known}
-        data["role"] = NodeRole(data["role"])
+        if "role" in data:
+            data["role"] = NodeRole(data["role"])
         return cls(**data)
 
 
@@ -225,7 +228,8 @@ class TrainingConfig:
         """Create from dictionary, ignoring unknown keys."""
         known = {f.name for f in __import__("dataclasses").fields(cls)}
         data = {k: v for k, v in data.items() if k in known}
-        data["compression"] = CompressionType(data["compression"])
+        if "compression" in data:
+            data["compression"] = CompressionType(data["compression"])
         return cls(**data)
 
 

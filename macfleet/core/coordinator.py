@@ -269,14 +269,16 @@ class Coordinator(BaseNode):
                 self._throughput_tracker.pop(rank, None)
                 self._cluster_state.remove_node(rank)
 
-                # Return rank to servicer for reuse
-                if self._servicer:
-                    with self._servicer._lock:
-                        self._servicer._free_ranks.append(rank)
-                        self._servicer._base_weights.pop(rank, None)
-
                 # Recalculate weights
                 self._recalculate_weights()
+
+        # Return ranks to servicer OUTSIDE _state_lock to avoid lock ordering
+        # inversion (_state_lock -> _servicer._lock vs _servicer._lock -> _state_lock)
+        if self._servicer and lost_ranks:
+            with self._servicer._lock:
+                for rank in lost_ranks:
+                    self._servicer._free_ranks.append(rank)
+                    self._servicer._base_weights.pop(rank, None)
 
         # Callbacks outside lock
         for rank in lost_ranks:
