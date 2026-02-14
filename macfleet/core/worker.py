@@ -264,9 +264,12 @@ class Worker(BaseNode):
 
             except Exception as e:
                 logger.error("Heartbeat failed: %s", e)
-                # Try to reconnect
+                # Only reconnect the gRPC channel, do NOT re-register
+                # (re-registration would assign a new rank and break training state)
                 try:
-                    await self._connect_to_coordinator()
+                    if self._grpc_client:
+                        self._grpc_client.disconnect()
+                        self._grpc_client.connect()
                 except Exception:
                     pass
 

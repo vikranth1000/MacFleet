@@ -146,6 +146,9 @@ class ClusterControlServicer(control_pb2_grpc.ClusterControlServicer):
             else:
                 new_weight = base_weight  # Restore when nominal
 
+            # Write adjusted weight back to cluster state
+            node.workload_weight = new_weight
+
         # Callback outside lock
         if self._on_heartbeat:
             self._on_heartbeat(

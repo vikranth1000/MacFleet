@@ -259,6 +259,10 @@ class CompressionPipeline:
         """
         self.stages = stages or []
 
+    def __bool__(self) -> bool:
+        """Pipeline is falsy when it has no compression stages."""
+        return bool(self.stages)
+
     def add_stage(self, stage: Compressor) -> "CompressionPipeline":
         """Add a stage to the pipeline."""
         self.stages.append(stage)

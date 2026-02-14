@@ -49,7 +49,7 @@ class TestAllReduce:
             result = await allreduce(tensor)
             return result
 
-        result = asyncio.get_event_loop().run_until_complete(run())
+        result = asyncio.run(run())
 
         assert torch.equal(tensor, result)
 
@@ -67,8 +67,8 @@ class TestAllReduce:
         async def run_sum():
             return await allreduce(tensor.clone(), op="sum")
 
-        result_mean = asyncio.get_event_loop().run_until_complete(run_mean())
-        result_sum = asyncio.get_event_loop().run_until_complete(run_sum())
+        result_mean = asyncio.run(run_mean())
+        result_sum = asyncio.run(run_sum())
 
         # For single node, both should return the original tensor
         assert torch.equal(tensor, result_mean)
@@ -89,7 +89,7 @@ class TestBroadcast:
         async def run():
             return await broadcast(tensor, src=0)
 
-        result = asyncio.get_event_loop().run_until_complete(run())
+        result = asyncio.run(run())
 
         assert torch.equal(tensor, result)
 
@@ -108,7 +108,7 @@ class TestScatter:
         async def run():
             return await scatter(tensor, src=0)
 
-        result = asyncio.get_event_loop().run_until_complete(run())
+        result = asyncio.run(run())
 
         assert torch.equal(tensor, result)
 
@@ -127,7 +127,7 @@ class TestGather:
         async def run():
             return await gather(tensor, dst=0)
 
-        result = asyncio.get_event_loop().run_until_complete(run())
+        result = asyncio.run(run())
 
         # Should add batch dimension
         assert result.shape == (1, 100)

@@ -257,11 +257,13 @@ class AllReduce:
                 _send_scatter(), _recv_scatter()
             )
 
-            # Reduce
-            if op == "mean":
-                chunks[recv_idx] = (chunks[recv_idx] + recv_chunk) / 2.0
-            else:
-                chunks[recv_idx] = chunks[recv_idx] + recv_chunk
+            # Scatter-reduce always sums; division happens after the loop.
+            chunks[recv_idx] = chunks[recv_idx] + recv_chunk
+
+        # Apply mean reduction after scatter-reduce completes
+        if op == "mean":
+            for i in range(len(chunks)):
+                chunks[i] = chunks[i] / world_size
 
         # Phase 2: Allgather
         for step in range(world_size - 1):
@@ -315,12 +317,14 @@ class Broadcast:
             return tensor
 
         if self._group.rank == src:
-            # Send to all other nodes
+            # Send to all other nodes concurrently to avoid deadlock
             send_tensor = tensor.cpu().contiguous()
-            for peer_rank, conn_key in self._group._peer_connections.items():
-                await self._group._transport.send_tensor(
+            await asyncio.gather(*(
+                self._group._transport.send_tensor(
                     send_tensor, conn_key, MessageType.TENSOR_WEIGHTS
                 )
+                for conn_key in self._group._peer_connections.values()
+            ))
             return tensor
         else:
             # Receive from source
@@ -403,14 +407,21 @@ class Gather:
             return tensor.unsqueeze(0)
 
         if self._group.rank == dst:
-            # Collect from all peers
+            # Collect from all peers concurrently to avoid deadlock
             chunks = [None] * self._group.world_size
             chunks[dst] = tensor
 
-            for peer_rank, conn_key in self._group._peer_connections.items():
-                recv_tensor, _ = await self._group._transport.recv_tensor(
+            peer_items = list(self._group._peer_connections.items())
+
+            async def _recv_from(conn_key):
+                return await self._group._transport.recv_tensor(
                     conn_key, self._group._device
                 )
+
+            results = await asyncio.gather(*(
+                _recv_from(conn_key) for _, conn_key in peer_items
+            ))
+            for (peer_rank, _), (recv_tensor, _) in zip(peer_items, results):
                 chunks[peer_rank] = recv_tensor
 
             return torch.stack(chunks)
