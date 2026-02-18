@@ -6,6 +6,7 @@ including registration, heartbeats, synchronization barriers, and training comma
 
 import threading
 import time
+from collections import deque
 from concurrent import futures
 from typing import Callable, Optional
 
@@ -56,7 +57,7 @@ class ClusterControlServicer(control_pb2_grpc.ClusterControlServicer):
         self._on_heartbeat = on_heartbeat
         self._on_deregister = on_deregister
         self._next_rank = 1  # Rank 0 is reserved for master
-        self._free_ranks: list[int] = []  # Reusable ranks from departed nodes
+        self._free_ranks: deque[int] = deque()  # Reusable ranks from departed nodes (O(1) popleft)
         self._barriers: dict[str, tuple[set[int], float]] = {}  # barrier_id -> (ranks, created_time)
         self._barrier_ttl = 120.0  # seconds before stale barriers are cleaned up
         self._base_weights: dict[int, float] = {}  # rank -> baseline weight (GPU-core based)
@@ -71,7 +72,7 @@ class ClusterControlServicer(control_pb2_grpc.ClusterControlServicer):
         with self._lock:
             # Assign rank (reuse freed ranks before incrementing)
             if self._free_ranks:
-                rank = self._free_ranks.pop(0)
+                rank = self._free_ranks.popleft()
             else:
                 rank = self._next_rank
                 self._next_rank += 1

@@ -393,9 +393,14 @@ async def run_worker(
         master_port: Master node port (overrides config).
     """
     if cluster_config is None:
+        if not master_addr:
+            raise ValueError(
+                "master_addr is required when cluster_config is not provided.\n"
+                "Provide it as: run_worker(master_addr='10.0.0.1')"
+            )
         cluster_config = ClusterConfig(
             role=NodeRole.WORKER,
-            master_addr=master_addr or "10.0.0.1",
+            master_addr=master_addr,
             master_port=master_port,
         )
 

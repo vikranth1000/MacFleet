@@ -1,6 +1,6 @@
 # MacFleet: Distributed Training Across Apple Silicon Macs
 
-> **Design Document v1.0** — This document is the single source of truth for the project. AI coding assistants (Cursor, Claude Code, etc.) should read this before making any implementation decisions.
+> **Design Document v1.0** — This document is the single source of truth for the project architecture and implementation decisions.
 
 ---
 

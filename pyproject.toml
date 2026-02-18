@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "macfleet"
-version = "0.2.0"
+version = "0.3.0"
 description = "Distributed ML training across Apple Silicon Macs over Thunderbolt"
 readme = "README.md"
 license = {text = "MIT"}
@@ -43,9 +43,13 @@ dev = [
     "mypy>=1.8.0",
     "pytest-cov>=4.1.0",
 ]
+yaml = [
+    "pyyaml>=6.0",
+]
 examples = [
     "torchvision>=0.16.0",
     "datasets>=2.14.0",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

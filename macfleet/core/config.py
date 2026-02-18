@@ -1,6 +1,6 @@
 """Configuration dataclasses for MacFleet distributed training."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from enum import Enum
 from typing import Optional
 
@@ -89,7 +89,7 @@ class NodeConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "NodeConfig":
         """Create from dictionary, ignoring unknown keys."""
-        known = {f.name for f in __import__("dataclasses").fields(cls)}
+        known = {f.name for f in dataclass_fields(cls)}
         return cls(**{k: v for k, v in data.items() if k in known})
 
 
@@ -158,11 +158,22 @@ class ClusterConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "ClusterConfig":
         """Create from dictionary, ignoring unknown keys."""
-        known = {f.name for f in __import__("dataclasses").fields(cls)}
+        known = {f.name for f in dataclass_fields(cls)}
         data = {k: v for k, v in data.items() if k in known}
         if "role" in data:
             data["role"] = NodeRole(data["role"])
         return cls(**data)
+
+    @classmethod
+    def from_yaml(cls, path: str, role_override: Optional[str] = None) -> "ClusterConfig":
+        """Create from a YAML config file.
+
+        Args:
+            path: Path to macfleet.yaml.
+            role_override: Override the role in the file (e.g., from CLI flag).
+        """
+        from macfleet.cli.config_loader import cluster_config_from_yaml
+        return cluster_config_from_yaml(path, role_override=role_override)
 
 
 @dataclass
@@ -226,11 +237,21 @@ class TrainingConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "TrainingConfig":
         """Create from dictionary, ignoring unknown keys."""
-        known = {f.name for f in __import__("dataclasses").fields(cls)}
+        known = {f.name for f in dataclass_fields(cls)}
         data = {k: v for k, v in data.items() if k in known}
         if "compression" in data:
             data["compression"] = CompressionType(data["compression"])
         return cls(**data)
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "TrainingConfig":
+        """Create from a YAML config file.
+
+        Args:
+            path: Path to macfleet.yaml.
+        """
+        from macfleet.cli.config_loader import training_config_from_yaml
+        return training_config_from_yaml(path)
 
 
 @dataclass

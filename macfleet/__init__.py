@@ -2,7 +2,7 @@
 
 import logging
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Configure a NullHandler so library users can control logging.
 # Applications (CLI, scripts) should call logging.basicConfig() to see output.

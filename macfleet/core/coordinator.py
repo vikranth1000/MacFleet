@@ -299,6 +299,21 @@ class Coordinator(BaseNode):
 
     def _print_cluster_status(self) -> None:
         """Print cluster status to console."""
+        # Copy data under lock, then render outside the lock (I/O-bound).
+        with self._state_lock:
+            rows = [
+                (
+                    node.rank,
+                    node.hostname,
+                    node.gpu_cores,
+                    node.workload_weight,
+                    self._throughput_tracker.get(node.rank, 0.0),
+                )
+                for node in sorted(
+                    self._cluster_state.nodes.values(), key=lambda n: n.rank
+                )
+            ]
+
         table = Table(title="Cluster Status")
         table.add_column("Rank", style="cyan")
         table.add_column("Hostname", style="green")
@@ -306,20 +321,14 @@ class Coordinator(BaseNode):
         table.add_column("Weight", justify="right")
         table.add_column("Throughput", justify="right")
 
-        with self._state_lock:
-            nodes = sorted(
-                self._cluster_state.nodes.values(),
-                key=lambda n: n.rank,
+        for rank, hostname, gpu_cores, weight, throughput in rows:
+            table.add_row(
+                str(rank),
+                hostname,
+                str(gpu_cores),
+                f"{weight:.1%}",
+                f"{throughput:.1f} samples/s" if throughput > 0 else "-",
             )
-            for node in nodes:
-                throughput = self._throughput_tracker.get(node.rank, 0.0)
-                table.add_row(
-                    str(node.rank),
-                    node.hostname,
-                    str(node.gpu_cores),
-                    f"{node.workload_weight:.1%}",
-                    f"{throughput:.1f} samples/s" if throughput > 0 else "-",
-                )
 
         console.print(table)
 
