@@ -153,15 +153,19 @@ class TensorTransport:
             await self._server.wait_closed()
             self._server = None
 
-        # Close all connections
+        # Collect connections to close under the lock, then close them outside
+        # to avoid holding the lock during awaits (which can cause deadlocks
+        # when other coroutines are waiting to acquire the lock).
         async with self._lock:
-            for reader, writer in self._connections.values():
-                writer.close()
-                try:
-                    await writer.wait_closed()
-                except Exception:
-                    pass
+            connections_to_close = list(self._connections.values())
             self._connections.clear()
+
+        for reader, writer in connections_to_close:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
 
     async def connect(self, host: str, port: int) -> str:
         """Connect to a remote tensor server.
@@ -224,15 +228,18 @@ class TensorTransport:
         Args:
             conn_key: Connection key from connect().
         """
+        # Pop from dict under the lock, then close outside to avoid holding
+        # the lock during the await (which can cause deadlocks).
         async with self._lock:
             conn = self._connections.pop(conn_key, None)
-            if conn:
-                _, writer = conn
-                try:
-                    writer.close()
-                    await writer.wait_closed()
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    pass  # Peer already disconnected
+
+        if conn:
+            _, writer = conn
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass  # Peer already disconnected
 
     async def send_tensor(
         self,
