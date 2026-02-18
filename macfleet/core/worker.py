@@ -381,7 +381,7 @@ class Worker(BaseNode):
 async def run_worker(
     cluster_config: Optional[ClusterConfig] = None,
     master_addr: Optional[str] = None,
-    master_port: int = 50051,
+    master_port: Optional[int] = None,
 ) -> None:
     """Run a worker node.
 
@@ -401,12 +401,12 @@ async def run_worker(
         cluster_config = ClusterConfig(
             role=NodeRole.WORKER,
             master_addr=master_addr,
-            master_port=master_port,
+            master_port=master_port or 50051,
         )
 
     if master_addr:
         cluster_config.master_addr = master_addr
-    if master_port:
+    if master_port is not None:
         cluster_config.master_port = master_port
 
     worker = Worker(cluster_config=cluster_config)

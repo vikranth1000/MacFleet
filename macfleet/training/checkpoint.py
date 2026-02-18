@@ -179,7 +179,7 @@ class CheckpointManager:
 
         console.print(f"[blue]Loading checkpoint: {checkpoint_path}[/blue]")
 
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
         # Load model
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -243,7 +243,7 @@ class CheckpointManager:
 
         # Fall back to loading from checkpoint
         try:
-            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
             if "metadata" in checkpoint:
                 return CheckpointMetadata(**checkpoint["metadata"])
         except Exception:
@@ -316,7 +316,7 @@ def load_checkpoint(
     Returns:
         Loaded checkpoint data.
     """
-    checkpoint = torch.load(path, map_location=device)
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     if optimizer is not None and "optimizer_state_dict" in checkpoint:

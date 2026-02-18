@@ -672,7 +672,7 @@ class Trainer:
 
                 progress.update(task, advance=1)
 
-        avg_loss = total_loss / num_batches
+        avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
         accuracy = total_correct / total_samples if total_samples > 0 else 0
         samples_per_sec = total_samples / (total_compute_time / 1000) if total_compute_time > 0 else 0
 
@@ -716,7 +716,7 @@ class Trainer:
                 del outputs, loss, predicted
 
         return {
-            "loss": total_loss / len(val_loader),
+            "loss": total_loss / len(val_loader) if len(val_loader) > 0 else 0.0,
             "accuracy": total_correct / total_samples if total_samples > 0 else 0,
         }
 
