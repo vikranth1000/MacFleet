@@ -5,14 +5,14 @@
 Turn your spare MacBooks, Mac Minis, and Mac Studios into one big GPU. MacFleet connects them over WiFi, Ethernet, or Thunderbolt and splits training across all of them automatically.
 
 ```
-  macfleet join                macfleet join               macfleet join
- ┌──────────────┐           ┌──────────────┐           ┌──────────────┐
- │  MacBook Pro  │◄────────►│  MacBook Air  │◄────────►│  Mac Studio   │
- │  M4 Pro       │  WiFi /  │  M4           │  WiFi /  │  M4 Ultra     │
- │  16 GPU cores │  ETH /   │  10 GPU cores │  ETH /   │  60 GPU cores │
- │  48 GB RAM    │  TB4     │  16 GB RAM    │  TB4     │  192 GB RAM   │
- │  weight: 0.35 │           │  weight: 0.15 │           │  weight: 0.50 │
- └──────────────┘           └──────────────┘           └──────────────┘
+  macfleet join              macfleet join            macfleet join
+ ┌──────────────┐          ┌──────────────┐          ┌──────────────┐
+ │  MacBook Pro │◄────────►│  MacBook Air │◄────────►│  Mac Studio  │
+ │  M4 Pro      │  WiFi /  │  M4          │  WiFi /  │  M4 Ultra    │
+ │  16 GPU cores│  ETH /   │  10 GPU cores│  ETH /   │  60 GPU cores│
+ │  48 GB RAM   │  TB4     │  16 GB RAM   │  TB4     │  192 GB RAM  │
+ │  weight: 0.35│          │  weight: 0.15│          │  weight: 0.50│
+ └──────────────┘          └──────────────┘          └──────────────┘
          ▲                          ▲                          ▲
          └──────────────────────────┴──────────────────────────┘
                         Ring AllReduce (gradient sync)
@@ -174,20 +174,20 @@ Step 4: Each node applies the same averaged gradients
 
 - **Adaptive compression.** Gradient compression auto-selects based on your network:
 
-  | Network       | Compression  | Ratio | 100MB gradients become |
-  |---------------|-------------|-------|------------------------|
-  | Thunderbolt 4 | None        | 1x    | 100 MB                 |
-  | Ethernet      | TopK 10% + FP16 | ~20x  | ~5 MB              |
-  | WiFi          | TopK 1% + FP16  | ~200x | ~500 KB            |
+  | Network       | Compression    | Ratio | 100MB gradients become |
+  |---------------|----------------|-------|------------------------|
+  | Thunderbolt 4 | None           | 1x    | 100 MB                 |
+  | Ethernet      | TopK 10% + FP16| ~20x  | ~5 MB                  |
+  | WiFi          | TopK 1% + FP16 | ~200x | ~500 KB                |
 
 - **Heterogeneous scheduling.** Faster Macs get bigger batches. The scheduler continuously re-profiles throughput and adjusts for thermal throttling:
 
   | Thermal State | Workload |
-  |--------------|----------|
-  | Nominal      | 100%     |
-  | Fair         | 90%      |
-  | Serious      | 70%      |
-  | Critical     | 30%      |
+  |---------------|----------|
+  | Nominal       | 100%     |
+  | Fair          | 90%      |
+  | Serious       | 70%      |
+  | Critical      | 30%      |
 
 ---
 
@@ -200,7 +200,7 @@ Step 4: Each node applies the same averaged gradients
 ├─────────────────────────────────────────────────────────────────┤
 │  Training: DataParallel | TrainingLoop | WeightedSampler        │
 ├─────────────────────────────────────────────────────────────────┤
-│  Engines: TorchEngine (PyTorch+MPS) | MLXEngine (Apple MLX)    │
+│  Engines: TorchEngine (PyTorch+MPS) | MLXEngine (Apple MLX)     │
 ├─────────────────────────────────────────────────────────────────┤
 │  Compression: TopK + FP16 + Adaptive (bandwidth-aware)          │
 ├─────────────────────────────────────────────────────────────────┤
@@ -208,7 +208,7 @@ Step 4: Each node applies the same averaged gradients
 ├─────────────────────────────────────────────────────────────────┤
 │  Communication: PeerTransport | WireProtocol | Collectives      │
 ├─────────────────────────────────────────────────────────────────┤
-│  Monitoring: Thermal | Health | Throughput | Dashboard           │
+│  Monitoring: Thermal | Health | Throughput | Dashboard          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -257,9 +257,9 @@ with macfleet.Pool(engine="torch") as pool:
 
 Pool options:
 
-| Parameter            | Default    | Description                          |
+| Parameter           | Default    | Description                          |
 |---------------------|------------|--------------------------------------|
-| `engine`            | `"torch"`  | `"torch"` or `"mlx"`                |
+| `engine`            | `"torch"`  | `"torch"` or `"mlx"`                 |
 | `name`              | `None`     | Custom node name                     |
 | `port`              | `50051`    | Communication port                   |
 | `token`             | `None`     | Pool authentication token            |
@@ -343,11 +343,11 @@ MacFleet works best when:
 **Model size limits (data parallel):**
 
 | Machine         | Usable RAM | Max Model Size |
-|-----------------|-----------|----------------|
-| Air 16GB        | ~10 GB    | ~800M params   |
-| Pro 36GB        | ~28 GB    | ~3B params     |
-| Pro 48GB        | ~40 GB    | ~5B params     |
-| Studio 192GB    | ~180 GB   | ~20B+ params   |
+|-----------------|------------|----------------|
+| Air 16GB        | ~10 GB     | ~800M params   |
+| Pro 36GB        | ~28 GB     | ~3B params     |
+| Pro 48GB        | ~40 GB     | ~5B params     |
+| Studio 192GB    | ~180 GB    | ~20B+ params   |
 
 **Quick check:** Run `macfleet bench` before training. If the predicted speedup is < 1.3x, a single powerful Mac may be more efficient.
 
