@@ -21,7 +21,14 @@ from typing import Optional
 import numpy as np
 
 from macfleet.comm.collectives import CollectiveGroup
+from macfleet.compression.adaptive import (
+    AdaptiveCompressor,
+    AdaptiveCompressionConfig,
+    CompressedArray,
+    CompressionLevel,
+)
 from macfleet.engines.base import TrainingMetrics
+from macfleet.pool.network import LinkType
 
 
 @dataclass
@@ -34,6 +41,9 @@ class DataParallelConfig:
     max_staleness: int = 0
     # Broadcast parameters from coordinator on start
     broadcast_params_on_start: bool = True
+    # Compression
+    compression: str = "none"  # "none", "light", "moderate", "aggressive", "adaptive"
+    compression_warmup_steps: int = 0
 
 
 class DataParallel:
@@ -58,12 +68,18 @@ class DataParallel:
         engine: object,  # Engine protocol (TorchEngine or MLXEngine)
         group: CollectiveGroup,
         config: Optional[DataParallelConfig] = None,
+        link_type: LinkType = LinkType.UNKNOWN,
     ):
         self.engine = engine
         self.group = group
         self.config = config or DataParallelConfig()
         self._step_count = 0
         self._sync_time_sec = 0.0
+        self._bytes_sent = 0
+        self._bytes_saved = 0
+
+        # Setup compression
+        self._compressor = self._make_compressor(link_type)
 
     @property
     def world_size(self) -> int:
@@ -84,6 +100,44 @@ class DataParallel:
             return 0.0
         return self._sync_time_sec / self._step_count
 
+    @property
+    def compression_ratio(self) -> float:
+        """Overall compression ratio (bytes sent / bytes uncompressed)."""
+        total = self._bytes_sent + self._bytes_saved
+        if total == 0:
+            return 1.0
+        return self._bytes_sent / total
+
+    def _make_compressor(self, link_type: LinkType) -> Optional[AdaptiveCompressor]:
+        """Create compressor based on config."""
+        comp = self.config.compression
+        if comp == "none":
+            return None
+
+        if comp == "adaptive":
+            return AdaptiveCompressor(
+                link_type=link_type,
+                config=AdaptiveCompressionConfig(
+                    warmup_steps=self.config.compression_warmup_steps,
+                ),
+            )
+
+        level_map = {
+            "light": CompressionLevel.LIGHT,
+            "moderate": CompressionLevel.MODERATE,
+            "aggressive": CompressionLevel.AGGRESSIVE,
+        }
+        level = level_map.get(comp)
+        if level is None:
+            return None
+
+        return AdaptiveCompressor(
+            config=AdaptiveCompressionConfig(
+                fixed_level=level,
+                warmup_steps=self.config.compression_warmup_steps,
+            ),
+        )
+
     async def setup(self) -> None:
         """Initialize data parallel training.
 
@@ -95,6 +149,10 @@ class DataParallel:
 
     async def sync_gradients(self) -> float:
         """AllReduce gradients across all nodes.
+
+        If compression is enabled, gradients are compressed before
+        allreduce and decompressed after. TopK + FP16 can reduce
+        communication volume by 20-200x depending on settings.
 
         Call after backward() and before step().
 
@@ -108,9 +166,28 @@ class DataParallel:
 
         # Extract gradients as flat numpy array
         flat_grads = self.engine.get_flat_gradients()
+        original_bytes = flat_grads.nbytes
 
-        # AllReduce (mean across all nodes)
-        averaged = await self.group.allreduce(flat_grads, op="mean")
+        # Compress if active
+        if self._compressor is not None and self._compressor.active:
+            compressed = self._compressor.compress(flat_grads)
+
+            if isinstance(compressed, CompressedArray):
+                # Decompress locally to get the sparse representation,
+                # then allreduce the sparse-approximated gradients.
+                # Each node compresses independently but allreduces
+                # the decompressed version for correctness.
+                sparse_grads = self._compressor.decompress(compressed)
+                averaged = await self.group.allreduce(sparse_grads, op="mean")
+                self._bytes_sent += compressed.compressed_size
+                self._bytes_saved += original_bytes - compressed.compressed_size
+            else:
+                averaged = await self.group.allreduce(compressed, op="mean")
+                self._bytes_sent += original_bytes
+        else:
+            # No compression
+            averaged = await self.group.allreduce(flat_grads, op="mean")
+            self._bytes_sent += original_bytes
 
         # Write averaged gradients back to model
         self.engine.apply_flat_gradients(averaged)

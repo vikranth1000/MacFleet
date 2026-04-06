@@ -23,11 +23,13 @@ Zero-config discovery. N-node scaling. WiFi, Ethernet, or Thunderbolt.
 - **Zero-Config Pooling**: `pip install macfleet && macfleet join` — auto-discovers peers via mDNS/Bonjour
 - **N-Node Scaling**: Ring AllReduce for 2+ nodes (not limited to pairs)
 - **Any Network**: WiFi, Ethernet, and Thunderbolt with adaptive buffer tuning
+- **Dual Engine**: PyTorch+MPS and Apple MLX — pluggable via Engine protocol
 - **Heterogeneous Scheduling**: Weighted batch allocation based on GPU cores + thermal state
 - **Gossip Heartbeat**: Peer-to-peer failure detection, automatic coordinator election
-- **Gradient Compression**: TopK sparsification + FP16 for bandwidth-constrained links
+- **Adaptive Compression**: Bandwidth-aware TopK+FP16 (auto-selects by link type: WiFi=200x, Ethernet=20x, TB4=off)
 - **Framework-Agnostic Core**: Communication layer uses numpy — never imports torch/mlx
-- **MPS Accelerated**: Native Apple Silicon GPU via Metal Performance Shaders
+- **Health Monitoring**: Thermal, memory, battery, loss trend — composite health score per node
+- **Rich TUI Dashboard**: Real-time cluster topology, training progress, and warnings
 
 ## Quick Start
 
@@ -47,6 +49,7 @@ macfleet join
 ```python
 import macfleet
 
+# PyTorch
 with macfleet.Pool() as pool:
     pool.train(
         model=MyModel(),
@@ -54,6 +57,23 @@ with macfleet.Pool() as pool:
         epochs=10,
         batch_size=128,
     )
+
+# MLX (Apple native)
+with macfleet.Pool(engine="mlx") as pool:
+    pool.train(
+        model=mlx_model,
+        dataset=(X, y),
+        epochs=10,
+        loss_fn=my_loss_fn,
+    )
+
+# One-liner
+macfleet.train(model=MyModel(), dataset=ds, epochs=10)
+
+# Decorator
+@macfleet.distributed(engine="torch")
+def my_training():
+    ...
 ```
 
 ### CLI commands
@@ -75,7 +95,7 @@ macfleet bench      # Benchmark compute, network, and allreduce
 ├─────────────────────────────────────────────────────────────────┤
 │  Training: DataParallel | TrainingLoop | WeightedSampler        │
 ├─────────────────────────────────────────────────────────────────┤
-│  Engines: TorchEngine (PyTorch+MPS) | MLXEngine (Phase 2)      │
+│  Engines: TorchEngine (PyTorch+MPS) | MLXEngine (Apple MLX)    │
 ├─────────────────────────────────────────────────────────────────┤
 │  Compression: TopK + FP16 + Adaptive pipeline                   │
 ├─────────────────────────────────────────────────────────────────┤
@@ -83,7 +103,7 @@ macfleet bench      # Benchmark compute, network, and allreduce
 ├─────────────────────────────────────────────────────────────────┤
 │  Communication: PeerTransport | WireProtocol | Collectives      │
 ├─────────────────────────────────────────────────────────────────┤
-│  Monitoring: Thermal | Health                                    │
+│  Monitoring: Thermal | Health | Throughput | Dashboard            │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -93,7 +113,7 @@ macfleet bench      # Benchmark compute, network, and allreduce
 git clone https://github.com/yourusername/MacFleet.git
 cd MacFleet
 pip install -e ".[dev]"
-make test          # 161 tests
+make test          # 268 tests
 make bench         # compute + network + allreduce benchmarks
 make lint          # ruff + mypy
 ```
@@ -103,6 +123,7 @@ make lint          # ruff + mypy
 - Python 3.11+
 - macOS with Apple Silicon (M1/M2/M3/M4)
 - PyTorch 2.1+ (for torch engine)
+- MLX 0.5+ (optional, for mlx engine)
 
 ## License
 

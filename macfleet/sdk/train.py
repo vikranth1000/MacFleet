@@ -14,7 +14,7 @@ def train(
     engine: str = "torch",
     compression: str = "adaptive",
     **kwargs: Any,
-) -> None:
+) -> dict:
     """Train a model on the MacFleet pool.
 
     Convenience wrapper that creates a Pool, joins, and trains.
@@ -26,11 +26,14 @@ def train(
         batch_size: Global batch size.
         engine: Engine type ("torch" or "mlx").
         compression: Compression type.
+
+    Returns:
+        Dict with training results: {loss, loss_history, epochs, time_sec, steps}.
     """
     from macfleet.sdk.pool import Pool
 
     with Pool(engine=engine) as pool:
-        pool.train(
+        return pool.train(
             model=model,
             dataset=dataset,
             epochs=epochs,

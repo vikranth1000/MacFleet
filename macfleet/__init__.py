@@ -20,9 +20,18 @@ def __getattr__(name: str):
     if name == "train":
         from macfleet.sdk.train import train
         return train
+    if name == "distributed":
+        from macfleet.sdk.decorators import distributed
+        return distributed
     if name == "DataParallel":
         from macfleet.training.data_parallel import DataParallel
         return DataParallel
+    if name == "TorchEngine":
+        from macfleet.engines.torch_engine import TorchEngine
+        return TorchEngine
+    if name == "MLXEngine":
+        from macfleet.engines.mlx_engine import MLXEngine
+        return MLXEngine
     raise AttributeError(f"module 'macfleet' has no attribute {name!r}")
 
 
@@ -30,5 +39,8 @@ __all__ = [
     "__version__",
     "Pool",
     "train",
+    "distributed",
     "DataParallel",
+    "TorchEngine",
+    "MLXEngine",
 ]

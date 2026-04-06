@@ -107,8 +107,12 @@ class Pool:
             return self._train_torch(
                 model, dataset, epochs, batch_size, lr, optimizer, loss_fn, **kwargs
             )
+        elif engine_type == "mlx":
+            return self._train_mlx(
+                model, dataset, epochs, batch_size, lr, optimizer, loss_fn, **kwargs
+            )
         else:
-            raise ValueError(f"Engine '{engine_type}' not yet supported. Use 'torch'.")
+            raise ValueError(f"Engine '{engine_type}' not supported. Use 'torch' or 'mlx'.")
 
     def _train_torch(
         self,
@@ -186,6 +190,79 @@ class Pool:
             "epochs": epochs,
             "time_sec": total_time,
             "steps": epochs * len(dataloader),
+        }
+
+    def _train_mlx(
+        self,
+        model: Any,
+        dataset: Any,
+        epochs: int,
+        batch_size: int,
+        lr: float,
+        optimizer: Any,
+        loss_fn: Any,
+        **kwargs: Any,
+    ) -> dict:
+        """Single-node MLX training."""
+        import mlx.core as mx
+        import mlx.optimizers as optim
+
+        from macfleet.engines.mlx_engine import MLXEngine
+
+        engine = MLXEngine()
+
+        if optimizer is None:
+            optimizer = optim.Adam(learning_rate=lr)
+
+        engine.load_model(model, optimizer, loss_fn=loss_fn)
+
+        # Convert dataset to MLX arrays
+        if isinstance(dataset, (tuple, list)) and len(dataset) == 2:
+            X, y = dataset
+            if not isinstance(X, mx.array):
+                X = mx.array(X if not hasattr(X, 'numpy') else X.numpy(), dtype=mx.float32)
+            if not isinstance(y, mx.array):
+                y = mx.array(y if not hasattr(y, 'numpy') else y.numpy(), dtype=mx.int32)
+        else:
+            raise ValueError("MLX training expects dataset as (X, y) tuple")
+
+        n_samples = X.shape[0]
+
+        total_start = time.time()
+        history = []
+
+        for epoch in range(epochs):
+            epoch_loss = 0.0
+            steps = 0
+
+            indices = list(range(n_samples))
+            import random
+            random.shuffle(indices)
+
+            for i in range(0, n_samples, batch_size):
+                batch_idx = indices[i:i + batch_size]
+                bx = X[batch_idx]
+                by = y[batch_idx]
+
+                engine.zero_grad()
+                loss = engine.forward((bx, by))
+                engine.backward(loss)
+                engine.step()
+
+                epoch_loss += float(loss)
+                steps += 1
+
+            avg_loss = epoch_loss / max(steps, 1)
+            history.append(avg_loss)
+
+        total_time = time.time() - total_start
+        steps_per_epoch = (n_samples + batch_size - 1) // batch_size
+        return {
+            "loss": history[-1] if history else 0.0,
+            "loss_history": history,
+            "epochs": epochs,
+            "time_sec": total_time,
+            "steps": epochs * steps_per_epoch,
         }
 
     @property

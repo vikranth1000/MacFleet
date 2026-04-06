@@ -13,8 +13,17 @@ from macfleet.compression.pipeline import (
 )
 from macfleet.compression.quantize import FP16Quantizer, Int8Quantizer
 from macfleet.compression.topk import TopKCompressor
+from macfleet.compression.adaptive import (
+    AdaptiveCompressor,
+    AdaptiveCompressionConfig,
+    CompressedArray,
+    CompressionLevel,
+    NumpyTopKCompressor,
+    NumpyFP16Compressor,
+)
 
 __all__ = [
+    # Torch-based pipeline (v1 compat)
     "CompressionPipeline",
     "CompressedGradient",
     "Compressor",
@@ -24,4 +33,11 @@ __all__ = [
     "TopKCompressor",
     "FP16Quantizer",
     "Int8Quantizer",
+    # Numpy-native adaptive compression (v2)
+    "AdaptiveCompressor",
+    "AdaptiveCompressionConfig",
+    "CompressedArray",
+    "CompressionLevel",
+    "NumpyTopKCompressor",
+    "NumpyFP16Compressor",
 ]
