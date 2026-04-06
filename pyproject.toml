@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "macfleet"
-version = "2.0.0a1"
+version = "2.0.0"
 description = "Pool Apple Silicon Macs into a distributed ML training cluster"
 readme = "README.md"
 license = {text = "MIT"}
@@ -54,10 +54,10 @@ dev = [
 macfleet = "macfleet.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/macfleet/macfleet"
-Documentation = "https://github.com/macfleet/macfleet#readme"
-Repository = "https://github.com/macfleet/macfleet"
-Issues = "https://github.com/macfleet/macfleet/issues"
+Homepage = "https://github.com/vikranthreddimasu/MacFleet"
+Documentation = "https://github.com/vikranthreddimasu/MacFleet#readme"
+Repository = "https://github.com/vikranthreddimasu/MacFleet"
+Issues = "https://github.com/vikranthreddimasu/MacFleet/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
