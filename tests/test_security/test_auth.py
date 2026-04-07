@@ -14,6 +14,7 @@ from macfleet.security.auth import (
     DEFAULT_SERVICE_TYPE,
     GRADIENT_MAX_MAGNITUDE,
     GRADIENT_MAX_NUMEL,
+    MIN_TOKEN_LENGTH,
     TOKEN_ENV_VAR,
     AuthRateLimiter,
     GradientValidationError,
@@ -22,7 +23,9 @@ from macfleet.security.auth import (
     create_client_ssl_context,
     create_server_ssl_context,
     generate_challenge,
+    generate_fleet_token,
     resolve_token,
+    resolve_token_with_file,
     sign_heartbeat,
     validate_gradient_metadata,
     validate_gradients,
@@ -472,3 +475,73 @@ class TestGradientFallback:
         """Normal gradients pass validation without exception."""
         grads = np.random.randn(10000).astype(np.float32)
         validate_gradients(grads)  # should not raise
+
+
+# ------------------------------------------------------------------ #
+# Token file management                                               #
+# ------------------------------------------------------------------ #
+
+
+class TestTokenFileManagement:
+    """Tests for auto-generated fleet tokens and file persistence."""
+
+    def test_generate_fleet_token_length(self):
+        token = generate_fleet_token()
+        assert len(token) >= MIN_TOKEN_LENGTH
+
+    def test_generate_fleet_token_unique(self):
+        t1 = generate_fleet_token()
+        t2 = generate_fleet_token()
+        assert t1 != t2
+
+    def test_resolve_token_explicit_takes_priority(self):
+        assert resolve_token("explicit") == "explicit"
+
+    def test_resolve_token_none_when_no_env(self, monkeypatch):
+        monkeypatch.delenv(TOKEN_ENV_VAR, raising=False)
+        assert resolve_token() is None
+
+    def test_resolve_token_env_var(self, monkeypatch):
+        monkeypatch.setenv(TOKEN_ENV_VAR, "from-env")
+        assert resolve_token() == "from-env"
+
+    def test_resolve_token_with_file_reads_file(self, tmp_path, monkeypatch):
+        """resolve_token_with_file reads from token file."""
+        token_file = tmp_path / "fleet-token"
+        token_file.write_text("saved-token-value")
+        monkeypatch.delenv(TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setattr("macfleet.security.auth.TOKEN_FILE", str(token_file))
+        assert resolve_token_with_file() == "saved-token-value"
+
+    def test_resolve_token_with_file_auto_generate(self, tmp_path, monkeypatch):
+        """resolve_token_with_file auto-generates and saves when no token exists."""
+        token_file = tmp_path / "fleet-token"
+        monkeypatch.delenv(TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setattr("macfleet.security.auth.TOKEN_FILE", str(token_file))
+        monkeypatch.setattr("macfleet.security.auth.TOKEN_DIR", str(tmp_path))
+
+        result = resolve_token_with_file(auto_generate=True)
+        assert result is not None
+        assert len(result) >= MIN_TOKEN_LENGTH
+        assert token_file.read_text() == result
+
+    def test_resolve_token_with_file_no_auto_generate(self, tmp_path, monkeypatch):
+        """Without auto_generate, returns None when no token found."""
+        monkeypatch.delenv(TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setattr("macfleet.security.auth.TOKEN_FILE", str(tmp_path / "nonexistent"))
+        assert resolve_token_with_file() is None
+
+    def test_resolve_token_with_file_explicit_overrides_file(self, tmp_path, monkeypatch):
+        """Explicit token overrides saved file."""
+        token_file = tmp_path / "fleet-token"
+        token_file.write_text("saved-value")
+        monkeypatch.setattr("macfleet.security.auth.TOKEN_FILE", str(token_file))
+        assert resolve_token_with_file("explicit-value") == "explicit-value"
+
+    def test_resolve_token_does_not_read_file(self, tmp_path, monkeypatch):
+        """resolve_token (non-file version) ignores token file."""
+        token_file = tmp_path / "fleet-token"
+        token_file.write_text("saved-value")
+        monkeypatch.delenv(TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setattr("macfleet.security.auth.TOKEN_FILE", str(token_file))
+        assert resolve_token() is None

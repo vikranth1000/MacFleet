@@ -13,6 +13,8 @@ from macfleet.comm.protocol import (
     MessageFlags,
     WireMessage,
     HEADER_SIZE,
+)
+from macfleet.engines.serialization import (
     tensor_to_bytes,
     bytes_to_tensor,
     serialize_compressed_gradient,

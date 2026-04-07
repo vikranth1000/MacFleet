@@ -49,15 +49,69 @@ TOKEN_ENV_VAR = "MACFLEET_TOKEN"
 # Minimum token length to prevent trivially bruteforceable keys
 MIN_TOKEN_LENGTH = 8
 
+# Token file location
+TOKEN_DIR = os.path.expanduser("~/.macfleet")
+TOKEN_FILE = os.path.join(TOKEN_DIR, "fleet-token")
+
+# Auto-generated token length (hex chars → 32 bytes of entropy)
+AUTO_TOKEN_LENGTH = 32
+
+
+def _read_token_file() -> Optional[str]:
+    """Read saved fleet token from ~/.macfleet/fleet-token."""
+    try:
+        with open(TOKEN_FILE) as f:
+            token = f.read().strip()
+            return token if token else None
+    except FileNotFoundError:
+        return None
+
+
+def _write_token_file(token: str) -> None:
+    """Save fleet token to ~/.macfleet/fleet-token with restricted permissions."""
+    os.makedirs(TOKEN_DIR, mode=0o700, exist_ok=True)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, token.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def generate_fleet_token() -> str:
+    """Generate a cryptographically random fleet token."""
+    return secrets.token_hex(AUTO_TOKEN_LENGTH)
+
 
 def resolve_token(token: Optional[str] = None) -> Optional[str]:
     """Resolve token from explicit value or MACFLEET_TOKEN env var.
 
     Priority: explicit argument > environment variable > None.
+    Used by SecurityConfig — does NOT read from file or auto-generate.
     """
     if token is not None:
         return token
     return os.environ.get(TOKEN_ENV_VAR)
+
+
+def resolve_token_with_file(token: Optional[str] = None, *, auto_generate: bool = False) -> Optional[str]:
+    """Resolve token from explicit value, env var, saved file, or auto-generate.
+
+    Priority: explicit argument > environment variable > saved file > auto-generate.
+    Used by CLI and SDK — reads from ~/.macfleet/fleet-token.
+    """
+    if token is not None:
+        return token
+    env_token = os.environ.get(TOKEN_ENV_VAR)
+    if env_token is not None:
+        return env_token
+    saved = _read_token_file()
+    if saved is not None:
+        return saved
+    if auto_generate:
+        new_token = generate_fleet_token()
+        _write_token_file(new_token)
+        return new_token
+    return None
 
 
 class SecurityConfig:

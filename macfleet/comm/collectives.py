@@ -174,7 +174,7 @@ class CollectiveGroup:
         # Flatten for chunking
         original_shape = array.shape
         original_dtype = array.dtype
-        flat = array.astype(np.float64).flatten()  # promote for accumulation
+        flat = array.flatten()
         numel = len(flat)
 
         # Pad to be evenly divisible

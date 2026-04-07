@@ -316,3 +316,110 @@ class TestDataParallelMetrics:
             assert dp0._step_count == 1
         finally:
             await _teardown_mesh(transports)
+
+
+# --------------------------------------------------------------------------- #
+# Edge case and safety tests                                                   #
+# --------------------------------------------------------------------------- #
+
+
+class TestModelConsistencyValidation:
+    """Verify that setup() rejects mismatched model architectures."""
+
+    @pytest.mark.asyncio
+    async def test_matching_models_pass(self):
+        """Two nodes with the same model architecture pass validation."""
+        transports = await _setup_mesh(2)
+        try:
+            groups = _make_groups(transports)
+            _, engine0 = _make_model_and_engine(seed=0)
+            _, engine1 = _make_model_and_engine(seed=99)  # different weights, same arch
+
+            dp0 = DataParallel(engine0, groups[0])
+            dp1 = DataParallel(engine1, groups[1])
+
+            # Should not raise
+            await asyncio.gather(dp0.setup(), dp1.setup())
+        finally:
+            await _teardown_mesh(transports)
+
+    @pytest.mark.asyncio
+    async def test_mismatched_models_raise(self):
+        """Two nodes with different architectures raise RuntimeError."""
+        transports = await _setup_mesh(2)
+        try:
+            groups = _make_groups(transports)
+
+            # Node 0: 4->2 (8 params)
+            _, engine0 = _make_model_and_engine(seed=0)
+
+            # Node 1: 4->8 (32 params) — different architecture
+            torch.manual_seed(0)
+            big_model = nn.Linear(4, 8, bias=False)
+            optimizer = torch.optim.SGD(big_model.parameters(), lr=0.01)
+            engine1 = TorchEngine(device="cpu")
+            engine1.load_model(big_model, optimizer)
+
+            dp0 = DataParallel(engine0, groups[0])
+            dp1 = DataParallel(engine1, groups[1])
+
+            with pytest.raises(RuntimeError, match="Model architecture mismatch"):
+                await asyncio.gather(dp0.setup(), dp1.setup())
+        finally:
+            await _teardown_mesh(transports)
+
+
+class TestNaNGradientGuard:
+    """Verify that NaN gradients are caught before polluting allreduce."""
+
+    @pytest.mark.asyncio
+    async def test_nan_gradients_zeroed(self):
+        """NaN local gradients are replaced with zeros before allreduce."""
+        transports = await _setup_mesh(2)
+        try:
+            groups = _make_groups(transports)
+
+            _, engine0 = _make_model_and_engine(seed=42)
+            _, engine1 = _make_model_and_engine(seed=42)
+
+            dp0 = DataParallel(engine0, groups[0])
+            dp1 = DataParallel(engine1, groups[1])
+
+            # Normal forward/backward on both
+            for eng in [engine0, engine1]:
+                eng.zero_grad()
+                loss = eng.forward(torch.randn(3, 4))
+                eng.backward(loss)
+
+            # Inject NaN into node 0's gradients
+            for param in engine0._trainable_params:
+                param.grad = torch.full_like(param.grad, float('nan'))
+
+            # Should not raise — NaN is caught and zeroed
+            await asyncio.gather(dp0.sync_gradients(), dp1.sync_gradients())
+
+            # Node 0 should get valid gradients (node 1's / 2)
+            synced = engine0.get_flat_gradients()
+            assert np.isfinite(synced).all(), "Synced gradients should be finite"
+        finally:
+            await _teardown_mesh(transports)
+
+
+class TestEmptyGradientGuard:
+    """Verify sync_gradients handles models with no trainable params."""
+
+    @pytest.mark.asyncio
+    async def test_empty_gradients_skip(self):
+        """Model with no trainable params → sync returns 0.0."""
+        _, engine = _make_model_and_engine(seed=0)
+        t = PeerTransport(local_id="solo", config=CONFIG)
+        group = CollectiveGroup(rank=0, world_size=2, transport=t, rank_to_peer={1: "peer"})
+        dp = DataParallel(engine, group)
+
+        # Clear all parameters to simulate no-grad model
+        for param in engine._trainable_params:
+            param.requires_grad_(False)
+        engine._trainable_params = [p for p in engine._model.parameters() if p.requires_grad]
+
+        elapsed = await dp.sync_gradients()
+        assert elapsed == 0.0

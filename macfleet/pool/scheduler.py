@@ -31,20 +31,8 @@ class WorkloadAssignment:
 class SchedulerConfig:
     """Scheduler configuration."""
     min_batch_per_node: int = 4       # Minimum viable batch size
-    thermal_factors: dict[ThermalPressure, float] | None = None
     use_throughput: bool = True       # Use measured throughput if available
     rebalance_every_n_steps: int = 50 # Re-profile interval
-
-    @property
-    def _thermal_factors(self) -> dict[ThermalPressure, float]:
-        if self.thermal_factors:
-            return self.thermal_factors
-        return {
-            ThermalPressure.NOMINAL: 1.0,
-            ThermalPressure.FAIR: 0.9,
-            ThermalPressure.SERIOUS: 0.7,
-            ThermalPressure.CRITICAL: 0.3,
-        }
 
 
 class Scheduler:
@@ -77,8 +65,6 @@ class Scheduler:
         if not nodes:
             return {}
 
-        thermal_factors = self.config._thermal_factors
-
         raw_weights: dict[str, float] = {}
         for node in nodes:
             if self.config.use_throughput and node.throughput_samples_sec > 0:
@@ -86,7 +72,7 @@ class Scheduler:
             else:
                 base = float(node.hardware.gpu_cores)
 
-            factor = thermal_factors.get(node.hardware.thermal_pressure, 1.0)
+            factor = node.hardware.thermal_pressure.workload_multiplier
             raw_weights[node.node_id] = base * factor
 
         total = sum(raw_weights.values())

@@ -14,6 +14,7 @@ Data parallel flow (each training step):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -81,6 +82,7 @@ class DataParallel:
         self._sync_time_sec = 0.0
         self._bytes_sent = 0
         self._bytes_saved = 0
+        self._expected_grad_size: Optional[int] = None
 
         # Setup compression
         self._compressor = self._make_compressor(link_type)
@@ -145,11 +147,33 @@ class DataParallel:
     async def setup(self) -> None:
         """Initialize data parallel training.
 
-        Broadcasts model parameters from rank 0 to all nodes so
-        everyone starts from the same weights.
+        Verifies all nodes have the same model architecture (param count),
+        then broadcasts parameters from rank 0 so everyone starts from
+        identical weights.
         """
-        if self.config.broadcast_params_on_start and self.world_size > 1:
-            await self.broadcast_parameters()
+        if self.world_size > 1:
+            await self._validate_model_consistency()
+            if self.config.broadcast_params_on_start:
+                await self.broadcast_parameters()
+
+    async def _validate_model_consistency(self) -> None:
+        """Verify all nodes have the same model architecture.
+
+        AllReduces param counts — if any node has a different count,
+        the sum won't equal count * world_size, and we raise immediately
+        rather than silently corrupting gradients later.
+        """
+        local_count = len(self.engine.get_flat_parameters())
+        count_array = np.array([local_count], dtype=np.float64)
+        summed = await self.group.allreduce(count_array, op="sum")
+        expected = local_count * self.world_size
+
+        if int(summed[0]) != expected:
+            raise RuntimeError(
+                f"Model architecture mismatch: this node has {local_count} parameters, "
+                f"but the fleet total is {int(summed[0])} (expected {expected} for "
+                f"{self.world_size} identical nodes). All nodes must load the same model."
+            )
 
     async def sync_gradients(self) -> float:
         """AllReduce gradients across all nodes.
@@ -170,6 +194,25 @@ class DataParallel:
 
         # Extract gradients as flat numpy array
         flat_grads = self.engine.get_flat_gradients()
+
+        # Guard: empty gradients (no trainable params or all grads are None)
+        if flat_grads.size == 0:
+            logger.warning("Empty gradient array — skipping sync (no trainable params?)")
+            return 0.0
+
+        # Guard: NaN/Inf in local gradients before sending to peers.
+        # A single node's NaN loss contaminates the entire fleet via allreduce.
+        if not np.isfinite(flat_grads).all():
+            logger.error(
+                "Local gradients contain NaN/Inf (likely from NaN loss). "
+                "Zeroing gradients for this step to avoid poisoning the fleet."
+            )
+            flat_grads = np.zeros_like(flat_grads)
+
+        # Record expected size on first call for shape validation
+        if self._expected_grad_size is None:
+            self._expected_grad_size = flat_grads.size
+
         original_bytes = flat_grads.nbytes
 
         # Compress if active
@@ -191,9 +234,18 @@ class DataParallel:
                 self._bytes_sent += original_bytes
         except GradientValidationError as e:
             # SECURITY: Metadata bomb or corrupt compressed gradient from peer.
-            # Fall back to local gradients rather than crashing.
             logger.error("Gradient deserialization failed: %s", e)
             logger.warning("Falling back to local gradients (discarding allreduce result)")
+            averaged = flat_grads
+        except (asyncio.TimeoutError, ConnectionError, OSError) as e:
+            # Node dropout: a peer disconnected mid-allreduce (lid closed,
+            # thermal shutdown, network failure). Use local gradients for
+            # this step rather than crashing the entire training run.
+            logger.error("Allreduce failed (node dropout?): %s", e)
+            logger.warning(
+                "Falling back to local gradients. Training continues but "
+                "this step is not synchronized across the fleet."
+            )
             averaged = flat_grads
 
         # SECURITY: Validate gradients before applying to model.
@@ -204,6 +256,16 @@ class DataParallel:
             logger.error("Gradient validation failed: %s", e)
             logger.warning("Falling back to local gradients (discarding allreduce result)")
             averaged = flat_grads  # use own gradients only
+
+        # Guard: verify allreduce didn't corrupt the shape
+        if averaged.size != self._expected_grad_size:
+            logger.error(
+                "Gradient shape mismatch after allreduce: expected %d, got %d. "
+                "Falling back to local gradients.",
+                self._expected_grad_size,
+                averaged.size,
+            )
+            averaged = flat_grads
 
         # Write averaged gradients back to model
         self.engine.apply_flat_gradients(averaged)

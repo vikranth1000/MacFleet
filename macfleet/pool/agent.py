@@ -27,6 +27,7 @@ from macfleet.pool.discovery import ServiceRegistry, DiscoveredNode
 from macfleet.pool.heartbeat import GossipHeartbeat, HeartbeatConfig
 from macfleet.pool.network import LinkType, detect_interfaces, get_network_topology
 from macfleet.pool.registry import ClusterRegistry, NodeRecord
+from macfleet.compute.worker import TaskWorker
 from macfleet.security.auth import (
     SecurityConfig,
     create_client_ssl_context,
@@ -168,6 +169,7 @@ class PoolAgent:
         self._registry: Optional[ClusterRegistry] = None
 
         self._running = False
+        self._task_worker: Optional[TaskWorker] = None
         self._heartbeat_server: Optional[asyncio.Server] = None
         self._heartbeat_ssl_ctx = None
         if self._security.tls:
@@ -274,6 +276,10 @@ class PoolAgent:
     async def stop(self) -> None:
         """Stop the agent gracefully."""
         self._running = False
+
+        if self._task_worker:
+            await self._task_worker.stop()
+            self._task_worker = None
 
         if self._heartbeat:
             await self._heartbeat.stop()

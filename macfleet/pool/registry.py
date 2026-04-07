@@ -140,10 +140,10 @@ class ClusterRegistry:
             eligible = [
                 n for n in self._nodes.values() if n.is_coordinator_eligible
             ]
-        if not eligible:
-            self._coordinator_id = None
-            return
+            if not eligible:
+                self._coordinator_id = None
+                return
 
-        # Highest compute_score wins; tiebreak on node_id (lexicographic)
-        winner = max(eligible, key=lambda n: (n.compute_score, n.node_id))
-        self._coordinator_id = winner.node_id
+            # Highest compute_score wins; tiebreak on node_id (lexicographic)
+            winner = max(eligible, key=lambda n: (n.compute_score, n.node_id))
+            self._coordinator_id = winner.node_id

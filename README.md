@@ -54,26 +54,26 @@ with macfleet.Pool() as pool:
 - **Zero config** — mDNS discovery, no coordinator setup, no config files
 - **Adaptive compression** — auto-selects TopK + FP16 based on link speed (1x–200x reduction)
 - **Heterogeneous scheduling** — faster Macs get bigger batches, adjusts for thermal throttling
-- **Secure** — HMAC mutual authentication, mandatory TLS, fleet-scoped discovery, gradient validation
+- **Secure by default** — auto-generated fleet tokens, HMAC mutual auth, mandatory TLS, gradient validation
 - **Framework-agnostic core** — communication layer uses only numpy, never imports torch or mlx
 
 ## Security
 
-Protect your fleet with a shared token:
+Security is enabled by default. The first `macfleet join` auto-generates a fleet token and saves it to `~/.macfleet/fleet-token`:
 
 ```bash
-macfleet join --token my-secret-token
-macfleet join --token my-secret-token --fleet-id research-team
+macfleet join                    # auto-generates token, prints it
+macfleet join --token <token>    # join with a specific token (copy from first node)
+macfleet join --fleet-id lab     # isolate by fleet name
+macfleet join --open             # disable security (not recommended)
 ```
 
-When a token is set:
+What's protected:
 - **Fleet isolation** — nodes with different tokens are invisible to each other on the network
 - **Mutual authentication** — HMAC-SHA256 challenge-response on every connection
 - **Encryption** — TLS enabled automatically (mandatory with auth)
 - **Authenticated heartbeat** — HMAC-signed liveness probes, replay-resistant
 - **Gradient validation** — rejects NaN, Inf, and extreme magnitudes (anti-poisoning)
-
-No token = open fleet, fully backward compatible.
 
 ## CLI
 

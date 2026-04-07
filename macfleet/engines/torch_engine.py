@@ -102,33 +102,6 @@ class TorchEngine:
             self._model.zero_grad()
 
     # ------------------------------------------------------------------ #
-    # Engine protocol: gradient serialization (dict[str, bytes])         #
-    # ------------------------------------------------------------------ #
-
-    def get_gradients(self) -> dict[str, bytes]:
-        """Serialize each parameter's gradient to bytes.
-
-        Format per entry: raw numpy tobytes() with float32 dtype.
-        Shape info is NOT included — the receiver must know the shape
-        (same model architecture). For cross-architecture transfer, use
-        get_flat_gradients() + apply_flat_gradients() instead.
-        """
-        grads = {}
-        for name, param in self._model.named_parameters():
-            if param.requires_grad and param.grad is not None:
-                grad_np = param.grad.detach().cpu().float().numpy()
-                grads[name] = grad_np.tobytes()
-        return grads
-
-    def apply_gradients(self, averaged_grads: dict[str, bytes]) -> None:
-        """Apply serialized gradients back to model parameters."""
-        for name, param in self._model.named_parameters():
-            if name in averaged_grads and param.requires_grad:
-                grad_np = np.frombuffer(averaged_grads[name], dtype=np.float32)
-                grad_np = grad_np.reshape(param.shape)
-                param.grad = torch.from_numpy(grad_np.copy()).to(self._device)
-
-    # ------------------------------------------------------------------ #
     # Flat gradient interface (used by DataParallel)                     #
     # ------------------------------------------------------------------ #
 
@@ -191,7 +164,7 @@ class TorchEngine:
     def load_state_dict(self, data: bytes) -> None:
         """Load model + optimizer from checkpoint bytes."""
         buffer = io.BytesIO(data)
-        state = torch.load(buffer, map_location=self._device, weights_only=False)
+        state = torch.load(buffer, map_location=self._device, weights_only=True)
         self._model.load_state_dict(state["model"])
         if self._optimizer and "optimizer" in state:
             self._optimizer.load_state_dict(state["optimizer"])

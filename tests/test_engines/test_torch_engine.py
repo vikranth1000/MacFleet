@@ -88,34 +88,6 @@ class TestTorchEngineBasic:
 
 
 class TestTorchEngineGradients:
-    def test_get_gradients_dict(self):
-        engine = TorchEngine(device="cpu")
-        model = _TinyModel()
-        engine.load_model(model)
-
-        x = torch.randn(3, 2)
-        loss = engine.forward(x)
-        engine.backward(loss)
-
-        grads = engine.get_gradients()
-        assert "linear.weight" in grads
-        assert isinstance(grads["linear.weight"], bytes)
-
-    def test_apply_gradients_dict(self):
-        engine = TorchEngine(device="cpu")
-        model = _TinyModel()
-        engine.load_model(model)
-
-        # Create synthetic gradients
-        grads = {"linear.weight": np.ones((5, 2), dtype=np.float32).tobytes()}
-        engine.apply_gradients(grads)
-
-        assert model.linear.weight.grad is not None
-        assert torch.allclose(
-            model.linear.weight.grad,
-            torch.ones(5, 2),
-        )
-
     def test_get_flat_gradients(self):
         engine = TorchEngine(device="cpu")
         model = _TinyModel()

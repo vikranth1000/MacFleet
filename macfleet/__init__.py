@@ -32,6 +32,12 @@ def __getattr__(name: str):
     if name == "MLXEngine":
         from macfleet.engines.mlx_engine import MLXEngine
         return MLXEngine
+    if name == "TaskFuture":
+        from macfleet.compute.models import TaskFuture
+        return TaskFuture
+    if name == "RemoteTaskError":
+        from macfleet.compute.models import RemoteTaskError
+        return RemoteTaskError
     raise AttributeError(f"module 'macfleet' has no attribute {name!r}")
 
 
@@ -43,4 +49,6 @@ __all__ = [
     "DataParallel",
     "TorchEngine",
     "MLXEngine",
+    "TaskFuture",
+    "RemoteTaskError",
 ]

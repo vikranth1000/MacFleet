@@ -2,6 +2,7 @@
 
 from macfleet.security.auth import (
     MIN_TOKEN_LENGTH,
+    TOKEN_FILE,
     AuthRateLimiter,
     GradientValidationError,
     SecurityConfig,
@@ -9,7 +10,9 @@ from macfleet.security.auth import (
     create_client_ssl_context,
     create_server_ssl_context,
     generate_challenge,
+    generate_fleet_token,
     resolve_token,
+    resolve_token_with_file,
     sign_heartbeat,
     validate_gradient_metadata,
     validate_gradients,
@@ -19,6 +22,7 @@ from macfleet.security.auth import (
 
 __all__ = [
     "MIN_TOKEN_LENGTH",
+    "TOKEN_FILE",
     "AuthRateLimiter",
     "GradientValidationError",
     "SecurityConfig",
@@ -26,7 +30,9 @@ __all__ = [
     "create_client_ssl_context",
     "create_server_ssl_context",
     "generate_challenge",
+    "generate_fleet_token",
     "resolve_token",
+    "resolve_token_with_file",
     "sign_heartbeat",
     "validate_gradient_metadata",
     "validate_gradients",

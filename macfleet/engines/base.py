@@ -1,7 +1,7 @@
 """Engine protocol: the critical interface decoupling pool from ML frameworks.
 
 Both TorchEngine and MLXEngine implement this protocol. The pool/comm layer
-never imports torch or mlx — gradients flow as dict[str, bytes].
+never imports torch or mlx — gradients flow as flat numpy arrays.
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
+
+import numpy as np
 
 
 class EngineType(Enum):
@@ -85,53 +87,36 @@ class Engine(Protocol):
     Both TorchEngine and MLXEngine implement this. The pool and communication
     layers work exclusively through this interface — they never import torch or mlx.
 
-    Gradients flow as dict[str, bytes] (parameter name -> serialized tensor bytes)
-    so the pool layer is completely framework-agnostic.
+    Gradients flow as flat numpy arrays (1D float32) so the pool layer
+    is completely framework-agnostic.
     """
 
     def load_model(self, model: Any, optimizer: Any | None = None) -> None:
-        """Load a model and optional optimizer into the engine.
-
-        Args:
-            model: Framework-specific model (torch.nn.Module or mlx equivalent).
-            optimizer: Framework-specific optimizer.
-        """
+        """Load a model and optional optimizer into the engine."""
         ...
 
     def forward(self, batch: dict[str, Any]) -> Any:
-        """Run forward pass on a batch.
-
-        Args:
-            batch: Dict of input tensors (framework-specific).
-
-        Returns:
-            Loss value (framework-specific tensor).
-        """
+        """Run forward pass on a batch. Returns loss (framework-specific)."""
         ...
 
     def backward(self, loss: Any) -> None:
-        """Run backward pass to compute gradients.
-
-        Args:
-            loss: Loss value from forward().
-        """
+        """Run backward pass to compute gradients."""
         ...
 
-    def get_gradients(self) -> dict[str, bytes]:
-        """Serialize current gradients to bytes.
-
-        Returns:
-            Dict mapping parameter name to serialized gradient bytes.
-            Format is engine-specific (numpy for torch, mlx.save for mlx).
-        """
+    def get_flat_gradients(self) -> np.ndarray:
+        """Flatten all gradients into a single 1D float32 numpy array."""
         ...
 
-    def apply_gradients(self, averaged_grads: dict[str, bytes]) -> None:
-        """Deserialize and apply averaged gradients from AllReduce.
+    def apply_flat_gradients(self, flat_grads: np.ndarray) -> None:
+        """Apply averaged gradients from AllReduce (1D float32 numpy array)."""
+        ...
 
-        Args:
-            averaged_grads: Dict mapping parameter name to serialized gradient bytes.
-        """
+    def get_flat_parameters(self) -> np.ndarray:
+        """Flatten all parameters into a single 1D float32 numpy array."""
+        ...
+
+    def apply_flat_parameters(self, flat_params: np.ndarray) -> None:
+        """Apply broadcast parameters (1D float32 numpy array)."""
         ...
 
     def step(self) -> None:

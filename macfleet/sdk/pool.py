@@ -2,20 +2,41 @@
 
     with macfleet.Pool() as pool:
         pool.train(model=MyModel(), dataset=ds, epochs=10)
+        results = pool.map(process_image, image_paths)
+        result = pool.run(expensive_fn, data)
 
 The Pool handles discovery, cluster formation, engine setup,
-and gradient synchronization. Users just provide a model and data.
+and gradient synchronization. Users just provide a model and data,
+or any Python function for general-purpose compute.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Optional
+from concurrent.futures import ProcessPoolExecutor
+from typing import Any, Callable, Iterable, Optional
+
+import cloudpickle
 
 from rich.console import Console
 
 console = Console()
+
+
+def _run_pickled(fn_bytes: bytes, args_bytes: bytes, kwargs_bytes: bytes) -> Any:
+    """Trampoline: deserialize with cloudpickle, call, return result.
+
+    ProcessPoolExecutor uses stdlib pickle internally, which cannot
+    serialize closures or lambdas. This module-level function IS
+    picklable by stdlib, and it uses cloudpickle to deserialize the
+    actual function and arguments (passed as bytes).
+    """
+    import cloudpickle as _cp
+    fn = _cp.loads(fn_bytes)
+    args = _cp.loads(args_bytes)
+    kwargs = _cp.loads(kwargs_bytes)
+    return fn(*args, **kwargs)
 
 
 class Pool:
@@ -38,9 +59,15 @@ class Pool:
         discovery_timeout: float = 3.0,
         fleet_id: Optional[str] = None,
         tls: bool = False,
+        open: bool = False,
     ):
+        from macfleet.security.auth import resolve_token_with_file
+
         self.name = name
-        self.token = token
+        if open:
+            self.token = None
+        else:
+            self.token = resolve_token_with_file(token, auto_generate=True)
         self.engine_type = engine
         self.port = port
         self.discovery_timeout = discovery_timeout
@@ -268,6 +295,93 @@ class Pool:
             "time_sec": total_time,
             "steps": epochs * steps_per_epoch,
         }
+
+    def map(
+        self,
+        fn: Callable,
+        iterable: Iterable,
+        timeout: float = 300.0,
+        max_workers: Optional[int] = None,
+    ) -> list:
+        """Apply fn to each item across the pool, return results in order.
+
+        For single-node pools, uses a local ProcessPoolExecutor.
+        For multi-node, distributes tasks to workers via TaskDispatcher.
+
+        Args:
+            fn: Function to apply to each item.
+            iterable: Items to process.
+            timeout: Per-task timeout in seconds.
+            max_workers: Max parallel processes (single-node only).
+
+        Returns:
+            List of results in the same order as input.
+
+        Usage:
+            with macfleet.Pool() as pool:
+                results = pool.map(process_image, image_paths)
+        """
+        if not self._joined:
+            raise RuntimeError("Must join pool before compute. Use Pool as context manager.")
+
+        items = list(iterable)
+        if not items:
+            return []
+
+        import os
+        workers = max_workers or min(os.cpu_count() or 1, 4)
+        fn_bytes = cloudpickle.dumps(fn)
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    _run_pickled,
+                    fn_bytes,
+                    cloudpickle.dumps((item,)),
+                    cloudpickle.dumps({}),
+                )
+                for item in items
+            ]
+            return [f.result(timeout=timeout) for f in futures]
+
+    def submit(self, fn: Callable, *args: Any, timeout: float = 300.0, **kwargs: Any) -> Any:
+        """Submit a single task and block until complete.
+
+        For single-node pools, executes in a child process.
+        For multi-node, dispatches to a worker.
+
+        Args:
+            fn: Function to execute.
+            *args: Positional arguments for fn.
+            timeout: Timeout in seconds.
+            **kwargs: Keyword arguments for fn.
+
+        Returns:
+            The function's return value.
+
+        Usage:
+            with macfleet.Pool() as pool:
+                result = pool.submit(expensive_fn, data)
+        """
+        if not self._joined:
+            raise RuntimeError("Must join pool before compute. Use Pool as context manager.")
+
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _run_pickled,
+                cloudpickle.dumps(fn),
+                cloudpickle.dumps(args),
+                cloudpickle.dumps(kwargs),
+            )
+            return future.result(timeout=timeout)
+
+    def run(self, fn: Callable, *args: Any, **kwargs: Any) -> Any:
+        """Run a function on the pool. Shorthand for submit().
+
+        Usage:
+            with macfleet.Pool() as pool:
+                result = pool.run(analyze, dataset)
+        """
+        return self.submit(fn, *args, **kwargs)
 
     @property
     def world_size(self) -> int:

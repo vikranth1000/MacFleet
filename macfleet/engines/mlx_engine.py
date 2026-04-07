@@ -308,38 +308,6 @@ class MLXEngine:
         mx.eval(self._model.parameters())
 
     # ------------------------------------------------------------------ #
-    # Engine protocol: gradient serialization (dict[str, bytes])         #
-    # ------------------------------------------------------------------ #
-
-    def get_gradients(self) -> dict[str, bytes]:
-        """Serialize each parameter's gradient to bytes."""
-        if self._grads is None:
-            return {}
-
-        grads = {}
-        for name, grad_array in _flatten_params(self._grads):
-            grads[name] = np.array(grad_array, dtype=np.float32).tobytes()
-        return grads
-
-    def apply_gradients(self, averaged_grads: dict[str, bytes]) -> None:
-        """Apply serialized gradients back to stored gradient dict."""
-        if self._grads is None:
-            return
-
-        flat_params = _flatten_params(self._grads)
-        new_flat = []
-
-        for name, grad_array in flat_params:
-            if name in averaged_grads:
-                data = np.frombuffer(averaged_grads[name], dtype=np.float32)
-                data = data.reshape(grad_array.shape)
-                new_flat.append((name, mx.array(data)))
-            else:
-                new_flat.append((name, grad_array))
-
-        self._grads = _unflatten_params(new_flat, self._grads)
-
-    # ------------------------------------------------------------------ #
     # Engine protocol: state serialization                               #
     # ------------------------------------------------------------------ #
 

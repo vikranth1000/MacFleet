@@ -40,11 +40,33 @@ def cli():
 @click.option("--token", default=None, envvar="MACFLEET_TOKEN", help="Pool token (or set MACFLEET_TOKEN env var)")
 @click.option("--fleet-id", default=None, help="Fleet identifier (isolates pool on network)")
 @click.option("--tls", "use_tls", is_flag=True, default=False, help="Enable TLS encryption")
-def join(name: str | None, port: int, token: str | None, fleet_id: str | None, use_tls: bool):
-    """Join the compute pool. Auto-discovers peers on the network."""
-    from macfleet.pool.agent import PoolAgent
+@click.option("--open", "open_fleet", is_flag=True, default=False, help="Disable security (open fleet, no authentication)")
+def join(name: str | None, port: int, token: str | None, fleet_id: str | None, use_tls: bool, open_fleet: bool):
+    """Join the compute pool. Auto-discovers peers on the network.
 
-    agent = PoolAgent(name=name, port=port, token=token, fleet_id=fleet_id, tls=use_tls)
+    Security is enabled by default. A fleet token is auto-generated on first
+    run and saved to ~/.macfleet/fleet-token. Copy this token to other Macs
+    to let them join your fleet.
+
+    Use --open to disable security (not recommended).
+    """
+    from macfleet.pool.agent import PoolAgent
+    from macfleet.security.auth import resolve_token_with_file, TOKEN_FILE
+
+    if open_fleet:
+        if token:
+            console.print("[red]Error: --open and --token are mutually exclusive.[/red]")
+            sys.exit(1)
+        resolved_token = None
+    else:
+        resolved_token = resolve_token_with_file(token, auto_generate=True)
+        if token is None:
+            # Token was auto-generated or loaded from file — show it
+            console.print(f"\n[bold green]Fleet token:[/bold green] {resolved_token}")
+            console.print(f"[dim]Saved to {TOKEN_FILE}[/dim]")
+            console.print("[dim]Copy this token to other Macs: macfleet join --token <token>[/dim]\n")
+
+    agent = PoolAgent(name=name, port=port, token=resolved_token, fleet_id=fleet_id, tls=use_tls)
 
     async def run():
         await agent.start()
@@ -102,12 +124,18 @@ def info():
 @cli.command()
 @click.option("--token", default=None, envvar="MACFLEET_TOKEN", help="Pool token (scopes discovery to fleet)")
 @click.option("--fleet-id", default=None, help="Fleet identifier")
-def status(token: str | None, fleet_id: str | None):
+@click.option("--open", "open_fleet", is_flag=True, default=False, help="Scan open fleet (ignore saved token)")
+def status(token: str | None, fleet_id: str | None, open_fleet: bool):
     """Show pool status (discovers peers for 3 seconds)."""
     from macfleet.pool.discovery import ServiceRegistry
-    from macfleet.security.auth import SecurityConfig
+    from macfleet.security.auth import SecurityConfig, resolve_token_with_file
 
-    sec = SecurityConfig(token=token, fleet_id=fleet_id) if token else None
+    if open_fleet:
+        resolved = None
+    else:
+        resolved = resolve_token_with_file(token)
+
+    sec = SecurityConfig(token=resolved, fleet_id=fleet_id) if resolved else None
     if sec and sec.is_secure:
         fleet_label = fleet_id or "default"
         console.print(f"[bold]Scanning fleet '{fleet_label}' for members...[/bold]")
@@ -334,6 +362,54 @@ def _train_from_script(
         console.print("[dim]      model = MyModel()[/dim]")
         console.print("[dim]      macfleet.train(model, dataset, epochs=10)[/dim]")
         sys.exit(1)
+
+
+@cli.command(name="run")
+@click.argument("script")
+@click.option("--fn", "fn_name", default="main", help="Function to execute (default: main)")
+@click.option("--token", default=None, envvar="MACFLEET_TOKEN", help="Pool token")
+@click.option("--open", "open_fleet", is_flag=True, default=False, help="Disable security")
+def run_command(script: str, fn_name: str, token: str | None, open_fleet: bool):
+    """Run a Python script on the pool.
+
+    The script must define the named function (default: main).
+    The function is executed across the pool's compute resources.
+
+    \b
+    Examples:
+        macfleet run process.py
+        macfleet run analysis.py --fn analyze
+    """
+    import importlib.util
+    import os
+
+    if not os.path.isfile(script):
+        console.print(f"[red]Error: Script not found: {script}[/red]")
+        sys.exit(1)
+
+    # Load user script
+    spec = importlib.util.spec_from_file_location("user_script", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    fn = getattr(module, fn_name, None)
+    if fn is None or not callable(fn):
+        console.print(f"[red]Error: Function '{fn_name}' not found in {script}[/red]")
+        console.print(f"[dim]The script must define a callable named '{fn_name}'.[/dim]")
+        sys.exit(1)
+
+    console.print(f"[bold blue]MacFleet Run[/bold blue] — {script}:{fn_name}()")
+
+    from macfleet.sdk.pool import Pool
+
+    with Pool(token=token, open=open_fleet) as pool:
+        t0 = time.time()
+        result = pool.run(fn)
+        elapsed = time.time() - t0
+
+    console.print(f"\n[green]Completed in {elapsed:.2f}s[/green]")
+    if result is not None:
+        console.print(f"Result: {result}")
 
 
 @cli.command()

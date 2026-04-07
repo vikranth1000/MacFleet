@@ -259,38 +259,6 @@ class TestMLXFlatInterface:
 # ------------------------------------------------------------------ #
 
 
-class TestMLXDictGradients:
-    def test_get_gradients_dict(self, engine_with_model):
-        x = mlx.random.normal((8, 4))
-        y = mlx.array([0, 1, 0, 1, 0, 1, 0, 1])
-        loss = engine_with_model.forward((x, y))
-        engine_with_model.backward(loss)
-
-        grads = engine_with_model.get_gradients()
-        assert isinstance(grads, dict)
-        assert len(grads) > 0
-        for name, data in grads.items():
-            assert isinstance(name, str)
-            assert isinstance(data, bytes)
-
-    def test_apply_gradients_dict(self, engine_with_model):
-        x = mlx.random.normal((8, 4))
-        y = mlx.array([0, 1, 0, 1, 0, 1, 0, 1])
-        loss = engine_with_model.forward((x, y))
-        engine_with_model.backward(loss)
-
-        grads = engine_with_model.get_gradients()
-        engine_with_model.apply_gradients(grads)
-
-        # Gradients should remain the same after roundtrip
-        grads_after = engine_with_model.get_gradients()
-        for name in grads:
-            np.testing.assert_array_equal(
-                np.frombuffer(grads[name], dtype=np.float32),
-                np.frombuffer(grads_after[name], dtype=np.float32),
-            )
-
-
 # ------------------------------------------------------------------ #
 # State serialization (checkpointing)                                #
 # ------------------------------------------------------------------ #
