@@ -154,10 +154,12 @@ class PoolAgent:
         token: Optional[str] = None,
         fleet_id: Optional[str] = None,
         tls: bool = False,
+        peers: Optional[list[str]] = None,
     ):
         self.port = port
         self.token = token
         self._security = SecurityConfig(token=token, fleet_id=fleet_id, tls=tls)
+        self._manual_peers = peers or []  # ["ip:port", ...]
 
         # Profiled at start()
         self.hardware: Optional[HardwareProfile] = None
@@ -270,6 +272,11 @@ class PoolAgent:
         self._running = True
 
         console.print(f"[green]Joined pool[/green] as {self.hardware.node_id} on {ip_address}:{self.port}")
+
+        # 7. Connect to manually specified peers (bypasses mDNS)
+        for peer_addr in self._manual_peers:
+            await self._add_manual_peer(peer_addr)
+
         if self._registry.is_coordinator:
             console.print("[bold yellow]This node is the coordinator[/bold yellow]")
 
@@ -326,6 +333,87 @@ class PoolAgent:
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def _add_manual_peer(self, peer_addr: str) -> None:
+        """Connect to a manually specified peer (bypasses mDNS).
+
+        Used when mDNS is blocked (e.g. enterprise WiFi with client isolation).
+        Sends a heartbeat ping to verify the peer is reachable and running.
+        """
+        try:
+            if ":" in peer_addr:
+                host, port_str = peer_addr.rsplit(":", 1)
+                port = int(port_str)
+            else:
+                host = peer_addr
+                port = self.port  # default to same port
+
+            # Ping the peer to verify it's alive and get its node_id
+            fleet_key = self._security.fleet_key
+            ssl_ctx = create_client_ssl_context() if self._security.tls else None
+
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port, ssl=ssl_ctx),
+                timeout=5.0,
+            )
+
+            if fleet_key:
+                nonce = secrets_mod.token_bytes(16)
+                sig = sign_heartbeat(fleet_key, self.node_id, nonce)
+                writer.write(f"APING {self.node_id} {nonce.hex()} {sig.hex()}\n".encode())
+                await writer.drain()
+                response = await asyncio.wait_for(reader.readline(), timeout=5.0)
+                writer.close()
+                await writer.wait_closed()
+
+                if not response.startswith(b"APONG"):
+                    console.print(f"[red]Peer {peer_addr}: no authenticated response[/red]")
+                    return
+                parts = response.decode().strip().split(" ")
+                if len(parts) != 4:
+                    console.print(f"[red]Peer {peer_addr}: malformed response[/red]")
+                    return
+                _, peer_node_id, resp_nonce_hex, resp_sig_hex = parts
+                if not verify_heartbeat(fleet_key, peer_node_id, bytes.fromhex(resp_nonce_hex), bytes.fromhex(resp_sig_hex)):
+                    console.print(f"[red]Peer {peer_addr}: authentication failed (wrong token?)[/red]")
+                    return
+            else:
+                writer.write(f"PING {self.node_id}\n".encode())
+                await writer.drain()
+                response = await asyncio.wait_for(reader.readline(), timeout=5.0)
+                writer.close()
+                await writer.wait_closed()
+
+                if not response.startswith(b"PONG"):
+                    console.print(f"[red]Peer {peer_addr}: no response[/red]")
+                    return
+                parts = response.decode().strip().split(" ")
+                peer_node_id = parts[1] if len(parts) >= 2 else f"peer-{host}"
+
+            # Register the peer with minimal hardware info
+            hw = HardwareProfile(
+                hostname=peer_node_id,
+                node_id=peer_node_id,
+                gpu_cores=0,
+                ram_gb=0.0,
+                memory_bandwidth_gbps=0.0,
+                has_ane=True,
+                chip_name="unknown (manual peer)",
+            )
+            self._registry.register(NodeRecord(
+                node_id=peer_node_id,
+                hostname=peer_node_id,
+                ip_address=host,
+                port=port,
+                hardware=hw,
+            ))
+            self._heartbeat.add_peer(peer_node_id, host, port, hw.compute_score)
+
+            console.print(f"[cyan]Connected to peer[/cyan] {peer_node_id} at {host}:{port}")
+
+        except (OSError, asyncio.TimeoutError, ConnectionRefusedError, ValueError) as e:
+            console.print(f"[red]Failed to connect to peer {peer_addr}: {e}[/red]")
+            console.print("[dim]Make sure the peer is running 'macfleet join' and is reachable[/dim]")
 
     def _on_peer_discovered(self, node: DiscoveredNode) -> None:
         """Called when a new peer is discovered via mDNS."""
