@@ -64,6 +64,7 @@ class TestPoolDistributedFlag:
 
         port = _free_port()
         pool = Pool(
+            name="pool-test-1",
             open=True,
             port=port,
             data_port=port + 1,
@@ -90,6 +91,7 @@ class TestPoolDistributedFlag:
 
         port = _free_port()
         with Pool(
+            name="pool-test-2",
             open=True,
             port=port,
             data_port=port + 1,
@@ -106,6 +108,7 @@ class TestPoolDistributedFlag:
 
         port = _free_port()
         pool = Pool(
+            name="pool-test-3",
             open=True,
             port=port,
             data_port=port + 1,
@@ -126,6 +129,7 @@ class TestPoolDistributedFlag:
 
         port = _free_port()
         pool = Pool(
+            name="pool-test-4",
             open=True,
             port=port,
             data_port=port + 1,
@@ -146,6 +150,7 @@ class TestPoolDistributedFlag:
 
         port = _free_port()
         with Pool(
+            name="pool-test-5",
             open=True,
             port=port,
             data_port=port + 1,
