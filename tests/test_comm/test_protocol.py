@@ -8,17 +8,17 @@ import torch
 
 from macfleet.comm.protocol import (
     HEADER_FORMAT,
-    MAX_PAYLOAD_SIZE,
-    MessageType,
-    MessageFlags,
-    WireMessage,
     HEADER_SIZE,
+    MAX_PAYLOAD_SIZE,
+    MessageFlags,
+    MessageType,
+    WireMessage,
 )
 from macfleet.engines.serialization import (
-    tensor_to_bytes,
     bytes_to_tensor,
-    serialize_compressed_gradient,
     deserialize_compressed_gradient,
+    serialize_compressed_gradient,
+    tensor_to_bytes,
 )
 
 

@@ -13,12 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
-import os
 import socket
-import subprocess
 import sys
 import time
-from typing import Optional
 
 import pytest
 
@@ -30,7 +27,10 @@ def _get_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _agent_worker(node_name: str, port: int, token: str, ready_evt: multiprocessing.Event, stop_evt: multiprocessing.Event) -> None:
+def _agent_worker(
+    node_name: str, port: int, token: str,
+    ready_evt: multiprocessing.Event, stop_evt: multiprocessing.Event,
+) -> None:
     """Run a PoolAgent in a child process.
 
     Starts the agent, signals ready, then waits for the parent to set stop_evt.

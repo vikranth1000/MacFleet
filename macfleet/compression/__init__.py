@@ -3,9 +3,17 @@
 Ported from v1 with proven TopK + FP16 pipeline (~20x compression).
 """
 
+from macfleet.compression.adaptive import (
+    AdaptiveCompressionConfig,
+    AdaptiveCompressor,
+    CompressedArray,
+    CompressionLevel,
+    NumpyFP16Compressor,
+    NumpyTopKCompressor,
+)
 from macfleet.compression.pipeline import (
-    CompressionPipeline,
     CompressedGradient,
+    CompressionPipeline,
     Compressor,
     FP16Stage,
     TopKStage,
@@ -13,14 +21,6 @@ from macfleet.compression.pipeline import (
 )
 from macfleet.compression.quantize import FP16Quantizer, Int8Quantizer
 from macfleet.compression.topk import TopKCompressor
-from macfleet.compression.adaptive import (
-    AdaptiveCompressor,
-    AdaptiveCompressionConfig,
-    CompressedArray,
-    CompressionLevel,
-    NumpyTopKCompressor,
-    NumpyFP16Compressor,
-)
 
 __all__ = [
     # Torch-based pipeline (v1 compat)

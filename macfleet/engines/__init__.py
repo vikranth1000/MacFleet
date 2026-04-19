@@ -26,7 +26,7 @@ __all__ = [
 
 # MLX is optional — only available on Apple Silicon with mlx installed
 try:
-    from macfleet.engines.mlx_engine import MLXEngine
+    from macfleet.engines.mlx_engine import MLXEngine  # noqa: F401
 
     __all__.append("MLXEngine")
 except ImportError:
