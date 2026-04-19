@@ -291,6 +291,12 @@ class Pool:
         if not self._joined:
             raise RuntimeError("Must join pool before training. Use Pool as context manager.")
 
+        engine_type = engine or self.engine_type
+        if engine_type not in ("torch", "mlx"):
+            raise ValueError(
+                f"Engine '{engine_type}' not supported. Use 'torch' or 'mlx'."
+            )
+
         # A4 preflight: reject empty / undersized datasets before we bring up
         # optimizer state + dataloader. Checking here means the user sees a
         # helpful error in microseconds instead of watching training
@@ -309,18 +315,13 @@ class Pool:
                 world_size=self.world_size,
             )
 
-        engine_type = engine or self.engine_type
-
         if engine_type == "torch":
             return self._train_torch(
                 model, dataset, epochs, batch_size, lr, optimizer, loss_fn, **kwargs
             )
-        elif engine_type == "mlx":
-            return self._train_mlx(
-                model, dataset, epochs, batch_size, lr, optimizer, loss_fn, **kwargs
-            )
-        else:
-            raise ValueError(f"Engine '{engine_type}' not supported. Use 'torch' or 'mlx'.")
+        return self._train_mlx(
+            model, dataset, epochs, batch_size, lr, optimizer, loss_fn, **kwargs
+        )
 
     def _train_torch(
         self,
