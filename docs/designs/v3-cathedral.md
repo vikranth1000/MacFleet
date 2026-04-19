@@ -1,3 +1,4 @@
+<!-- /autoplan restore point: /Users/vikranthreddimasu/.gstack/projects/vikranthreddimasu-MacFleet/master-autoplan-restore-20260419-040026.md -->
 ---
 status: ACTIVE
 ---
@@ -51,7 +52,7 @@ Her terminal lights up with the Rich TUI: ring allreduce animation, thermal gaug
 
 | # | Area | Severity | Action |
 |---|------|----------|--------|
-| 1 | Pool.train + Pool facade single-node (covers #23) | P0 | **NOT a wiring — a near-rewrite of sdk/pool.py.** Current Pool is a stub (pool.py:80-97 Pool.join does nothing; pool.py:389 world_size=1; pool.py:394 nodes=[]). Deliverable: Pool.join() instantiates PoolAgent + starts discovery + waits for quorum_size or timeout; Pool.world_size reads from registry; Pool.nodes reads alive_nodes. Pool.train reads peer list, builds PeerTransport mesh using agent's discovered IPs, creates CollectiveGroup with ranks from registry.get_ranks(), wraps engine in DataParallel, runs training_loop from training/loop.py. Pool.train must return the updated model OR mutate in-place with documented semantics (see Issue 25). Estimated scope: ~500-700 LOC, not ~300. |
+| 1 | Pool.train + Pool facade single-node (covers #23) | P0 | **NOT a wiring — a near-rewrite of sdk/pool.py.** Current Pool is a stub (pool.py:80-97 Pool.join does nothing; pool.py:389 world_size=1; pool.py:394 nodes=[]). Deliverable: Pool.join() instantiates PoolAgent + starts discovery + waits for quorum_size or timeout; Pool.world_size reads from registry; Pool.nodes reads alive_nodes. Pool.train reads peer list, builds PeerTransport mesh using agent's discovered IPs, creates CollectiveGroup with ranks from registry.get_ranks(), wraps engine in DataParallel, runs training_loop from training/loop.py. **Pool.train MUTATES the user's model in-place** (same semantics as PyTorch training loops). Returns `TrainingResult` dict, not the model. Signature: `pool.train(model, dataset, epochs=10, batch_size=128, lr=1e-3, optimizer=None, loss_fn=None, on_step=None)`. Defaults: Adam optimizer when not provided, CrossEntropyLoss when not provided, batch_size=128 (global, split by scheduler). Error UX: `No peers discovered within 10s. Run 'macfleet status' to check discovery, or use --peer <ip:port> to connect manually.` Estimated scope: ~500-700 LOC. |
 | 2 | Coordinator election broken in secure mode | P1 | Exchange HMAC-signed HW profile after auth handshake. Extend ACK payload: `node_id + response + challenge + hw_profile_json + hmac_sig`. |
 | 3 | Gradient compression theater | P1 | **DEFERRED to v2.3** per spec review — DGC sparse allreduce is research-grade; index alignment across peers is non-trivial. v2.2 ships dense-only + README update removing the 200x claim until real. **Additional v2.3 verification step (outside-voice find):** MPS backend returns approximate results for some reduction ops. Before declaring DGC complete, write a correctness test that runs DGC on CPU vs MPS and asserts gradient divergence stays below 1e-3 relative error over 100 steps. If MPS diverges, pin compression path to CPU gradients only. |
 | 4 | Dead subsystems (Scheduler, TaskWorker, HealthMonitor, Dashboard, update_link) | P2 | Wire into the new Pool.train glue OR delete. Scheduler+Sampler wire into Pool.train via Issue 1. HealthMonitor wires into agent. Dashboard wires via E2. TaskWorker wires via Issue 20 refactor (scope fn to `@macfleet.task` decorator). |
@@ -74,8 +75,8 @@ Her terminal lights up with the Rich TUI: ring allreduce animation, thermal gaug
 
 | # | Proposal | Effort | Decision | Reasoning |
 |---|----------|--------|----------|-----------|
-| E1 | Cross-engine export (pool.export('mlx' / 'coreml')) | M (CC ~3h) | ACCEPTED (v2.3) | Closes train-to-serve loop. Scope: LoRA adapters, linear-only models, transformer subset (decoder-only). Non-goals: generic PyTorch→MLX tracer, non-standard ops, custom layers. Uses `coremltools` + `mlx-lm` reference converter. **Prerequisite:** Pool.train must return the trained model OR mutate the user's model in-place with documented semantics. Issue 1 deliverable covers this — E1 reads the final state from whatever Pool.train returns. |
-| E2 | Live TUI dashboard wired (`macfleet join --dashboard`) | S (CC ~45min) | ACCEPTED (v2.2) | Dashboard class already exists. ~100 LOC wiring. |
+| E1 | Cross-engine export (pool.export('mlx' / 'coreml')) | M (CC ~3h) | ACCEPTED (v2.3) | Closes train-to-serve loop. Scope: LoRA adapters, linear-only models, transformer subset (decoder-only). Non-goals: generic PyTorch→MLX tracer, non-standard ops, custom layers. Uses `coremltools` + `mlx-lm` reference converter. **Prerequisite:** Pool.train now mutates in-place per Issue 1 (user's model object is the final state). E1 reads model.state_dict() directly. Error UX for unsupported classes (autoplan design find): `Cannot export <ModelClass>: not a supported class. Supported: LoRAWrapper, nn.Linear, decoder-only transformers (see docs/export.md). File a feature request at <repo>/issues with your model class and use case.` |
+| E2 | Live TUI dashboard wired (`macfleet join --dashboard`) | S (CC ~45min → M (CC ~2h)) | ACCEPTED (v2.2) | Dashboard class already exists. Wiring + design spec below. **Design spec (autoplan Phase 2):** (1) Row 0 is a single status line < 60 chars answering "is this working right now": `TRAINING - step 47/300 - 3 peers - ETA 12m` or `WAITING - 0/2 peers - share token: A7K-9MN`. (2) Warnings panel collapses when empty. (3) All peer status indicators use shape+color (●○◐) not color alone (color-blind safety). (4) Honor `NO_COLOR` env var. (5) Min terminal 80×24; below that, fall back to plain log mode. (6) TUI state matrix below. See ASCII mockup at end of plan. |
 | E3 | `macfleet doctor` diagnostic CLI | M (CC ~2h) | ACCEPTED (v2.3) | Turns 'slow training' into a diagnosis with fix hint. |
 | E4 | Thermal-aware pause/resume | S (CC ~45min) | ACCEPTED (v2.2) | Uses existing ThermalMonitor. ~150 LOC into training_loop. |
 | E5 | Hybrid cloud burst (Pool(burst_to='modal')) | XL (CC ~3-5d) | ACCEPTED (v3.0, design doc required) | Per spec review: under-scoped at 1d. Actually requires Modal auth, container build, WAN gradient transport, cost controls, cancellation. **Gate: separate design doc before implementation starts.** |
@@ -161,6 +162,24 @@ Ship v2.2 first. Stop. Get feedback. Then v2.3. Don't start v3.0 until v2.3 has 
 3. **MLX parity.** If E1 (cross-engine export) goes well but MLX path doesn't get same attention, we ship asymmetric quality. Must test both engines equally.
 4. **Hybrid cloud (E5) is ambitious.** Deferred to v3.0 because it's an architectural step, not a feature add.
 5. **The mlx.distributed question isn't going away.** If Apple ships better heterogeneous link support in MLX 1.0, MacFleet's MLX engine becomes redundant. Keep an eye on WWDC announcements.
+6. **Competitive landscape unmonitored** (autoplan CEO subagent find). Three credible threats: (a) Exo Labs — funded, heterogeneous Mac+iPhone+Linux distributed inference; (b) MLX-LM with mlx.distributed — Apple's roadmap; (c) Modal/Together at $2/hr H100s undercuts "apartment Macs" pitch for serious work. Add `macfleet bench vs-exo` + cost-equiv comparison to v2.3 scope.
+7. **Demand unvalidated** (autoplan CEO subagent find). Plan assumes PyTorch-on-Mac researchers are a meaningful addressable population. No evidence. Before v2.2 ships: post demo on r/LocalLLaMA + HN with waitlist signup. Kill v3.0 if <200 signups.
+
+## WWDC Kill-Switch (explicit, from autoplan Phase 1 CEO dual voice)
+
+Risk #5 is promoted from footnote to explicit kill-switch.
+
+**Trigger conditions — KILL v3.0 if Apple ships at WWDC 2026 or 2027:**
+- Native distributed PyTorch-MPS (NCCL-on-MPS, gloo-on-MPS, or equivalent)
+- `mlx.pytorch` interop library
+- CoreML distributed training primitives
+- Any first-party "pool my Macs for ML" product
+
+**Decision procedure on trigger:**
+1. Stop all v3.0 work within 48h
+2. Ship v2.2 + v2.3 as the "final" MacFleet if in flight
+3. Pivot to either: (a) inference-mesh product (CEO subagent's reframe) or (b) wind-down
+4. Update README "Superseded by..." if applicable
 
 ## Reviewer Concerns
 
@@ -192,3 +211,356 @@ Outside voice reviewer (Claude subagent) found 7 issues both prior reviews misse
 7. Issue 27 added — mDNS doesn't traverse Tailscale/VPN; document + plan v3.0 gossip
 
 **Strategic challenge:** Outside voice argued SCOPE EXPANSION is wrong (dilutes focus, competes with Apple in Apple's MLX territory). User reviewed and held SCOPE EXPANSION. Cathedral mode stands.
+
+<!-- AUTONOMOUS DECISION LOG -->
+## Decision Audit Trail (autoplan)
+
+| # | Phase | Decision | Classification | Principle | Rationale |
+|---|-------|----------|----------------|-----------|-----------|
+| 1 | CEO | Inference mesh reframe → surface at gate | USER CHALLENGE | N/A | Single-voice critical finding, user held EXPANSION vs similar argument before |
+| 2 | CEO | Demand probe (r/LocalLLaMA + waitlist) → add to plan | TASTE | P3 pragmatic | Cheap de-risking. Added as Risk #7. |
+| 3 | CEO | WWDC kill-switch → make explicit | MECHANICAL | P1 completeness | Risk #5 promoted from footnote to explicit trigger conditions + procedure |
+| 4 | CEO | Re-examine Approach C (PyTorch-only) → skip | USER CHALLENGE | N/A | User explicitly held SCOPE EXPANSION vs this argument in prior review |
+| 5 | CEO | Competitive bench (`macfleet bench vs-exo`) → add to v2.3 TODO | TASTE | P1 completeness | Concrete, actionable, 1-day CC work. Added as Risk #6. |
+| 6 | CEO | Force-rank 8 expansions → surface at gate | USER CHALLENGE | N/A | User accepted all 8 in prior review; subagent argues wishlist |
+
+## Design Specifications (autoplan Phase 2)
+
+### E2 Dashboard — TUI State Matrix
+
+| Cluster state | Training state | Status line (row 0) | Peers table | Training panel | Warnings |
+|---|---|---|---|---|---|
+| Zero peers | Not started | `WAITING — 0 peers — share token: {suffix}` | "No peers discovered yet. Run `macfleet join --token {tok}` on other Macs." | (hidden) | (hidden) |
+| Discovering | Not started | `DISCOVERING — found 1 peer — waiting for quorum` | 1 row with ● alive | (hidden) | (hidden) |
+| Quorum reached | Starting | `STARTING — 3 peers online — initializing` | N rows all ● | Spinner, "broadcasting initial params" | (hidden) |
+| Healthy | Training | `TRAINING — step X/Y — N peers — ETA Zm` | N rows all ● with thermal | Loss sparkline, step/s, bytes/s | (hidden if clean) |
+| Peer dropped | Training | `TRAINING — step X/Y — N-1/N peers — peer 'studio' suspected` | 1 row ◐ (suspected), others ● | Continues, note "fallback mode" | `◐ studio.local: 3 missed heartbeats` |
+| Peer failed | Training | `TRAINING — step X/Y — N-1/N peers — 1 peer removed` | 1 row ○ (failed), others ● | Continues at world_size=N-1 | `○ studio.local: marked failed. Run macfleet doctor to diagnose.` |
+| Thermal pause | Paused | `PAUSED (thermal) — all peers CRITICAL — waiting 60s` | N rows 🔥 red | Progress bar for cooldown | `All peers overheated. Pausing until one cools.` |
+| Training done | Done | `COMPLETE — {epochs} epochs — final loss {X} — time {Y}m` | N rows all ● | Summary stats | (hidden) |
+| Error (local NaN) | Training | `TRAINING — step X/Y — N peers — WARN: zeroed NaN gradient` | N rows all ● | Continues, gradient health indicator red | `◐ Local gradient was NaN at step X. Zeroed. Check LR?` |
+| Error (allreduce fail) | Degraded | `DEGRADED — step X/Y — allreduce timeout, local-only step` | N rows, dim | Continues at reduced quality | `Allreduce timeout with peer X. Step X used local gradients only.` |
+
+### E2 Dashboard — ASCII Mockup (healthy training state)
+
+```
+┌ TRAINING — step 147/300 — 3 peers — ETA 08m ──────────────────────────────────┐
+│                                                                                │
+│ ┌─ Cluster (3 peers) ──────────────┐  ┌─ Training ─────────────────────────┐  │
+│ │  ● studio.local    M4 Ultra  nom  │  │ Epoch  2/10  (20%)                 │  │
+│ │  ● air-m4.local    M4        fair │  │ Loss   0.342 ▁▂▃▄▅▆▇▆▅▄▃▂▂▁        │  │
+│ │  ● work-mini.local M2 Pro    nom  │  │ Speed  312 samples/sec             │  │
+│ └───────────────────────────────────┘  │ Sync   45ms/step (9% of step)      │  │
+│                                        └────────────────────────────────────┘  │
+│ ┌─ Network ───────────────────────────────────────────────────────────────┐   │
+│ │ Sent  128 MB  |  Saved 12 MB (compression 91%)  |  Latency 3ms avg       │   │
+│ └──────────────────────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────────────────────┘
+  Press q to quit.  macfleet join is running.
+```
+
+Width 80 cols. At <80 cols, collapse to plain log mode.
+NO_COLOR env honored. Peer status indicators ● (alive) ◐ (suspected) ○ (failed) 🔥 (thermal crit).
+
+### Error Message Catalog (autoplan Phase 2)
+
+Every P0/P1 issue has an exact user-facing error string, because ship-it-vague-and-see-what-happens produces Python tracebacks in production.
+
+| Scenario | User sees |
+|---|---|
+| Issue 1: No peers discovered in 10s | `No peers discovered within 10s. Run 'macfleet status' to check mDNS, or use Pool(peers=['<ip>:<port>', ...]) to connect manually.` |
+| Issue 2: Wrong fleet token | `Connection refused by {peer}: fleet token mismatch. Both Macs need to use the same token (see ~/.macfleet/fleet-token on the first node).` |
+| Issue 2: Secure-mode election split-brain (pre-fix) | (N/A after fix) |
+| Issue 3: DGC CPU-MPS divergence on v2.3 | `Compression correctness check failed: MPS gradients diverge from CPU by {X}%. Compression pinned to CPU-only. Set compression="none" to skip.` |
+| Issue 5: Port 50052 already in use | `Data transport port 50052 already in use. Another MacFleet agent? Run 'lsof -i :50052' to find it.` |
+| Issue 20: Unknown task module-path | `Task '<module_path>' not registered on this peer. Decorate the function with @macfleet.task and install the same module on every peer.` |
+| Issue 22: Rate-limited heartbeat | (silent to legitimate users; attacker sees `connection dropped`) |
+| Issue 25: Pool.map with 0 peers | `Pool.map needs at least 1 peer. Run macfleet join on another Mac, or use `Pool().map()` locally for single-node.` |
+| E1 unsupported model class | `Cannot export {ModelClass}: not supported. Supported: LoRAWrapper, nn.Linear, decoder-only transformers. Report at <repo>/issues.` |
+| E4 thermal pause | `Training paused: all {N} peers hit CRITICAL thermal. Resuming when any peer cools (typically 30-90s).` |
+| E4 thermal resume | `Training resumed: {peer} recovered from thermal pressure.` |
+
+### Accessibility spec (E2 + CLI globally)
+
+- Use shape+color for status, never color alone (color-blind safe)
+- Honor `NO_COLOR` env var across all commands + dashboard
+- Min terminal 80×24. Below that: plain log mode (no Live layout, plain stderr lines).
+- `--quiet` suppresses all non-error output
+- `--json` outputs structured JSON (for CI + `doctor` integrations)
+- All log lines are single-line grep-able (no multiline horizontal banners in --quiet)
+
+
+## Engineering Additions (autoplan Phase 3)
+
+### v2.2 additions (auto-applied, critical fixes)
+
+| # | Finding | Fix |
+|---|---|---|
+| A1 | Network partition mid-allreduce hangs indefinitely | Add per-allreduce timeout (default 30s) to CollectiveGroup. Aborts + returns local gradient with warning. Part of Issue 1 scope, not deferred to E7. ~40 LOC. |
+| A2 | `@macfleet.task` decorator: malicious peer sends unsafe arg values | Require `@macfleet.task` callables to declare a Pydantic schema for args; validate before dispatch. Path-typed args blocked unless explicitly `untrusted_paths_ok=True`. Part of Issue 20 scope. ~80 LOC + pydantic dep. |
+| A3 | Checkpoint disk-full destroys previous checkpoint | Add `_atomic_write_state_dict` (write to .tmp, fsync, rename). Applies everywhere torch.save is used. ~30 LOC. |
+| A4 | Pool.train with empty or undersized dataset silently produces 0 batches | Pre-check `len(dataset) >= batch_size * world_size`. Raise with sized-down recommendation. Part of Issue 1. ~10 LOC. |
+| A5 | Issue 2 HMAC HW profile has no replay protection | Include challenge nonce in HMAC input; reject if nonce reused within session. Amend Issue 2. ~20 LOC. |
+| A6 | Token file created with default umask | Issue created. Spec: `~/.macfleet/fleet-token` must be mode 0600 on creation. Warn on read if mode is broader. Part of security/auth.py refactor (Issue 9 family). ~10 LOC. |
+| A7 | Issue 6 wire format has no version byte | Add `wire_version: int` field to HMAC-signed HW profile payload. Cheap insurance for future expansion. Part of Issue 2. ~5 LOC. |
+| A8 | `@macfleet.task` registry collision test missing | Unit test asserting double-registration raises. Part of Issue 20. ~15 LOC. |
+| A9 | Chaos test missing | Add `tests/test_integration/test_chaos.py`: spawn 3 procs, kill one mid-train, assert remaining 2 converge with degraded world_size. v2.2 gate. ~100 LOC. |
+| A10 | Stub multi-process integration test for PR #1 | E8 delivers `test_multi_process.py` stub that spawns 3 agents + asserts discovery + quorum (works against existing code). Issue 1 extends it to full train. Every v2.2 PR has multi-process coverage from PR #1. ~60 LOC stub. |
+| A11 | Peer joining mid-training: behavior undefined | Pool composition freezes at `quorum_reached`; late joiners get warning + queued for next `train()` call. Document in Error catalog. Amend Issue 1. ~20 LOC. |
+| A12 | Issue 9 stdlib ssl cert-from-memory API doesn't exist as specified | Re-spec: use `cryptography` to build the cert + key in memory, then write to secure temp dir with `tempfile.TemporaryDirectory(dir=$TMPDIR)` (user-only tmpfs-backed on macOS), load_cert_chain from there, immediately cleanup. `load_cert_chain` requires file paths per Python docs. Or use `pyOpenSSL.SSL.Context.use_certificate` + `use_privatekey` with `cryptography` objects — cleaner. Amend Issue 9. |
+| A13 | E2 Dashboard re-estimated from S(~2h) to M(~4h) | 50 state transitions × Live-render coordination × NO_COLOR × 80×24 fallback × shape indicators = realistic 4h. Update effort column. |
+| A14 | E1 split into E1a + E1b | E1a (v2.3, M ~3h): LoRA-adapter-only export. E1b (v3.0, L ~6-8h): full decoder-only transformer + CoreML. Dtype, param-name remapping, tokenizer metadata all heavier than estimated. |
+| A15 | WWDC hard pause June 1-10, 2026 | Do not merge v2.2 release PRs during WWDC week. Read keynote signals first. If Apple ships distributed PyTorch-MPS or mlx-pytorch bridge, kill-switch fires (see earlier section). |
+| A16 | Thermal pause with perma-hot peer | After N=5 consecutive thermal pauses from same peer, scheduler removes peer from active rotation. Training proceeds at world_size=N-1. Amend E4. ~25 LOC. |
+| A17 | E4 thermal pause needs coordinator broadcast | Pause/resume decisions go through coordinator, not per-peer. Prevents param drift. Amend E4. ~15 LOC. |
+
+### v2.3 additions (auto-applied)
+
+| # | Finding | Fix |
+|---|---|---|
+| A18 | msgpack fuzz test | `hypothesis`-based fuzz test for msgpack deserialization in test_comm/. Catches malformed-payload DoS. Ships with v2.3 Issue 3 work. ~30 LOC. |
+| A19 | CI matrix `python 3.13 × MLX` as `continue-on-error: true` | MLX wheels lag CPython. Keep in matrix for early warning; don't block releases. E8 amendment. ~5 LOC YAML. |
+| A20 | `--peer` race with mDNS | Integration test: both discovery paths arriving simultaneously should dedupe by node_id. Part of Issue 27 v3.0 prep. ~20 LOC. |
+| A21 | Token rotation primitive missing | `macfleet rotate-token` CLI. Generates new token, flags old as expired, propagates via gossip. Amend Issue 26 scope. ~100 LOC. |
+| A22 | Issue 25 distributed exception semantics | Document + test: `Pool.map` in distributed mode returns `list[Result \| Exception]` in input order. Partial failures don't abort. Amend Issue 25. |
+
+### v3.0 additions (design doc inputs)
+
+| # | Finding | Fix |
+|---|---|---|
+| A23 | Ring allreduce N>8 latency wall | Document ceiling: "Ring topology supported N≤8; larger fleets require hierarchical reduce." Hard warn in code above N=8. v3.0 hierarchical reduce scoped as E9 for future planning. |
+| A24 | E5 cloud burst: credential exfiltration | v3.0 design doc must enumerate: burst peers form separate trust domain, `~/.modal.toml` never accessible to peer-supplied tasks. Pre-commit: `Pool(burst_to=...)` with local peers in registry = hard error. |
+| A25 | 10x gradient size OOM | Document param-count ceiling per device tier in README. Add pre-train check: `param_count * 4 * 3` bytes vs `memory_usage_gb`. Amend Issue 11 for v2.3. ~20 LOC. |
+
+
+## Architecture Diagram (autoplan Phase 3 — updated with autoplan findings)
+
+```
+                        ┌──────────────────────────────────────────────┐
+                        │   macfleet.Pool(token=..., fleet_id=...)     │
+                        │   Pool.join() → starts agent, waits quorum   │
+                        │   Pool.train(model, ...) → mutates in place  │
+                        │   Pool.map(fn, items) → distributed when N>1 │
+                        │   Pool.export("mlx"|"coreml") → artifact     │
+                        └────────────┬─────────────────────────────────┘
+                                     │
+                        ┌────────────▼─────────────────────────────────┐
+                        │            PoolAgent (daemon)                │
+                        │  ┌────────────────────────────────────────┐  │
+                        │  │ Discovery (mDNS + --peer fallback)     │  │
+                        │  │ Heartbeat (port 50051, rate-limited)   │  │
+                        │  │ Registry (signed HW profiles + nonce)  │  │
+                        │  │ Bully election (fixed in secure mode)  │  │
+                        │  └────────────────────────────────────────┘  │
+                        └────────────┬─────────────────────────────────┘
+                                     │ (data plane — port 50052)
+                                     │
+      ┌──────────────────────────────┼──────────────────────────────┐
+      │                              │                              │
+  ┌───▼────────┐  ┌─────────────┐   │   ┌────────────┐  ┌──────────▼┐
+  │ E2         │  │ Issue 1     │   │   │ E4         │  │ E3         │
+  │ Dashboard  │  │ Pool.train  │   │   │ Thermal    │  │ doctor     │
+  │ (4h spec)  │  │ w/ timeouts │   │   │ coord-     │  │ bandwidth  │
+  │ + state    │  │ partition   │   │   │ broadcast  │  │ probe CLI  │
+  │ matrix     │  │ guard (30s) │   │   │ pause      │  │            │
+  └────────────┘  └──────┬──────┘   │   └────────────┘  └────────────┘
+                         │          │
+                    ┌────▼──────┐   │
+                    │ Data      │   │
+                    │ Parallel  │   │   ┌──────────────────────┐
+                    │ + sched   │   │   │ @macfleet.task       │ (Issue 20)
+                    └────┬──────┘   │   │ registry +           │
+                         │          │   │ Pydantic arg schema  │ ◀── NEW (A2)
+                    ┌────▼──────┐   │   │ path-arg blocking    │
+                    │Collective │   │   └──────────────────────┘
+                    │  Group    │   │           │
+                    │  (ring)   │   │   ┌───────▼──────────┐
+                    │ +timeout  │◀──┤   │ Pool.map / submit│ (Issue 25)
+                    └────┬──────┘   │   │ distributed when │
+                         │          │   │ world_size > 1   │
+                    ┌────▼──────┐   │   └──────────────────┘
+                    │PeerTransp │   │
+                    │ port 50052│◀──┘
+                    │ TLS via   │       ┌──────────────────────┐
+                    │ cryptogr. │       │  @atomic_write helper│ ◀── NEW (A3)
+                    │ rate-lim. │       │  tmp → fsync → rename│
+                    └───────────┘       └──────────────────────┘
+
+  v2.3 additions:      v3.0 additions (kill-switch gated):
+  ┌─────────────┐     ┌──────────────┐ ┌──────────────┐ ┌──────────┐
+  │ E1a LoRA    │     │ E1b full     │ │ E5 cloud     │ │ E7 shard │
+  │ export      │     │ decoder-only │ │ burst        │ │ streaming│
+  │ (M ~3h)     │     │ (L ~6-8h)    │ │ (design doc) │ │          │
+  └─────────────┘     └──────────────┘ └──────────────┘ └──────────┘
+```
+
+## Revised Release Sequencing (autoplan Phase 3)
+
+The prior release sequence had Issue 1 at step 8 of 11, creating a single point of failure. Revised per eng subagent recommendation:
+
+**v2.2 Phase A — Safety net** (lands in any case):
+- PR 1: E8 CI/CD + **stub `test_multi_process.py`** (discovery + quorum only, works today)
+- PR 2: Issue 5 — port split 50051/50052 (can ship as v2.1.2 patch if Phase B delays)
+
+**v2.2 Phase B — Security pipeline** (parallel to Phase C):
+- PR 3: Issue 9 + A6 + A12 — TLS cert via `cryptography` + token file 0600
+- PR 4: Issue 2 + A5 + A7 — signed HW profile with nonce + wire_version
+- PR 5: Issue 6 — `--peer` capability exchange
+- PR 6: Issue 22 — heartbeat rate limiter
+- PR 7: Issue 20 + A2 + A8 — `@macfleet.task` decorator with Pydantic schema + collision test
+
+**v2.2 Phase C — Product pipeline** (parallel to Phase B):
+- PR 8: Issue 1 + A1 + A4 + A11 — Pool.train wiring with 30s allreduce timeout, empty-dataset guard, late-joiner semantics + A3 atomic checkpoint write
+- PR 9: Issue 25 — Pool.map/submit distributed mode
+- PR 10: E2 — Dashboard with state matrix + accessibility (M, ~4h)
+- PR 11: E4 + A16 + A17 — thermal pause w/ coordinator broadcast + perma-hot peer eviction
+- PR 12: A9 — chaos test gate
+
+**v2.2 Phase D — Release gate**:
+- Manual multi-Mac smoke test
+- **WWDC hard pause June 1-10, 2026** — no release merges during keynote window
+- If no kill-switch trigger fires at WWDC, tag v2.2 release
+
+Phase A + B can land even if Phase C blocks. Phase C can land even if part of B does. Bus factor: 1 still, but release bus factor improves to 2.
+
+
+## DX Additions (autoplan Phase 3.5)
+
+### DX Scorecard
+
+| Dimension | Current | Target | Gap |
+|---|---|---|---|
+| Getting started (TTHW) | 3/10 (8-12 min) | 8/10 (<3 min) | Need Issue 26 + `macfleet quickstart` |
+| API/CLI naming | 7/10 | 9/10 | Fix doctor/diagnose, tighten bench |
+| Error messages | 7/10 | 9/10 | Fix stinkers, add version-mismatch |
+| Documentation | 2/10 | 8/10 | Docs site with mkdocs-material |
+| Upgrade path | 3/10 | 8/10 | Migration guides + DeprecationWarning |
+| Escape hatches | 5/10 | 8/10 | Document PoolConfig dataclass |
+| Ecosystem integration | 2/10 | 8/10 | HF Accelerate adapter |
+| Observability | 6/10 | 9/10 | E3 checklist + macfleet logs |
+
+**Overall: 4.4/10 → target 8.4/10**
+
+### v2.2 DX additions (auto-applied)
+
+| # | Finding | Fix |
+|---|---|---|
+| D1 | Docs site missing | Ship `mkdocs-material` + GitHub Pages. `docs/quickstart.md`, `docs/api.md` (pdoc-generated), `docs/cookbook/` with 4 recipes (MNIST train, LoRA fine-tune, custom loss, resume from checkpoint). Host on GitHub Pages. ~2h setup + content. |
+| D2 | `doctor` vs `diagnose` inconsistency | Pick `doctor` (matches `brew doctor` / `npm doctor`). Delete `macfleet diagnose` from README + replace with `macfleet doctor`. ~10 LOC. |
+| D3 | Error message stinkers | Issue 3 message includes literal `Pool(compression="none")`. Issue 25 fixes backtick mid-sentence formatting. Issue 22 adds debug-log even when silent to attacker. ~5 LOC each. |
+| D4 | Version mismatch between peers undetected | Add `wire_version: int` to handshake HMAC payload (piggyback on A7). Log warning + reject connection when wire_version of peer differs by major. ~15 LOC. |
+| D5 | README lacks 30-second PyTorch pitch | Rewrite README opening: lead with "PyTorch's DistributedDataParallel doesn't work on Apple Silicon. MacFleet is the only library that gives you DDP-equivalent on Mac." Move current tagline to second paragraph. ~50 LOC README diff. |
+| D6 | No migration guide, no deprecation warnings | v2.2: `docs/migrating/v2.1-to-v2.2.md`. Add `MIGRATION.md` at repo root. In code: fire `DeprecationWarning` if user calls `model = pool.train(...)` expecting returned-model pattern (silent-break detection). ~30 LOC + doc. |
+| D7 | E3 `macfleet doctor` checks unenumerated | Spec 8 explicit checks each returning `{status: ok\|warn\|fail, message: str, fix: str}`: (a) MPS available, (b) PyTorch version ≥ 2.1, (c) heartbeat RTT <500ms, (d) data port 50052 reachable, (e) gradient bytes/sec vs link capacity, (f) thermal headroom >30%, (g) free disk for checkpoints, (h) compression efficacy vs baseline. Amend E3. |
+| D8 | Silent token typo during discovery | mDNS-layer check: peer with different fleet_id hash logs `Saw peer X with different fleet token. Did you copy correctly?`. Critical UX fix for worst first-run experience. ~20 LOC in pool/discovery.py. |
+| D9 | `macfleet join` foreground-blocking unclear | README: document both `macfleet join &` backgrounding pattern AND add `--background` flag that daemonizes (or uses launchd on macOS). ~40 LOC. |
+| D10 | `macfleet quickstart` scaffolding | v2.2 CLI subcommand: creates `my_macfleet_demo.py` with MNIST loader + `Pool.train` + docstrings. Dry-run works solo (single-node) so users see first-run success immediately. ~80 LOC + sample dataset bundle. |
+| D11 | PoolConfig escape hatches dataclass | v2.2: `PoolConfig` dataclass with all timeouts, defaults, compression overrides, custom LR schedulers, custom coordinator election. `Pool(config=PoolConfig(...))`. README "Power user" section. Every default in the plan gets a documented override. ~100 LOC + doc. |
+
+### v2.3 DX candidates (held for gate — USER CHALLENGES DC1-DC4)
+
+See Phase 3.5 auto-decision notes. DC1-4 are surfaced at the final gate, not auto-applied.
+
+### Developer journey map (target state after v2.2)
+
+| # | Stage | Time | Note |
+|---|---|---|---|
+| 1 | Read README | 20s | 30-second PyTorch-on-Mac pitch front-loaded |
+| 2 | `curl .../install.sh \| sh` both Macs | 30s | Single command, skips per-machine pip on slow WiFi |
+| 3 | Mac #1: `macfleet join` — prints QR | 5s | QR via `qrcode` lib |
+| 4 | Mac #2: scan QR (iPhone camera) → paste | 5s | Issue 26 delivered |
+| 5 | `macfleet quickstart` Mac #1 | 30s | Generates demo.py + MNIST |
+| 6 | `python demo.py` Mac #1 | 10s | Dashboard opens, first step visible |
+| **Total** | | **~100s** | **Down from 8-12 min to <2 min** |
+
+
+## Cross-Phase Themes (autoplan synthesis)
+
+Concerns raised independently in 2+ phases are high-confidence signals:
+
+| Theme | Phases raising it | Status |
+|---|---|---|
+| Token bootstrap UX blocks v2.2 | Design subagent + DX subagent | **Cross-phase critical.** Both argue Issue 26 must ship in v2.2, not v2.3. Surfaced at gate as DC1. |
+| Pool.train return/mutate semantics unclear | Eng subagent + DX subagent | Eng required spec; DX noted silent-breakage risk. Resolved: Issue 1 now explicit in-place mutation + DeprecationWarning helper per D6. |
+| `@macfleet.task` security argument surface | Eng subagent | Single-phase but critical. Auto-applied A2 Pydantic schema validation. |
+| Plan is engineering-thorough but thin on: user experience, docs, error UX | Design + DX + Eng subagents all noted some variant | Cross-phase theme. Design added mockup + state matrix. DX added docs site + quickstart. Eng added error catalog. |
+| WWDC '26 + competitive landscape underweighted | CEO subagent | Single-phase but strategic. Auto-applied: explicit kill-switch + competitive bench TODO + WWDC pause. |
+
+
+## Gate Decisions Applied (autoplan Phase 4)
+
+All 5 user challenges accepted by user at final gate.
+
+### DC1 applied: Issue 26 promoted from v2.3 → v2.2
+
+Issue 26 token bootstrap UX moves to v2.2 Phase C scope (adjacent to E2/E4). ~200 LOC: QR code generation via `qrcode` lib, Bonjour-based pairing when both Macs on same LAN, pasteboard fallback for terminal-only flow. Added to v2.2 PR list as PR 13.
+
+### DC2 applied: HuggingFace Accelerate adapter in v2.3
+
+New expansion item **E9**: `macfleet.accelerate` module implementing `DistributedType.MacFleet`. Accelerator detects macfleet backend when `accelerator = Accelerator(distributed_backend="macfleet")`. ~200 LOC. Ships v2.3 alongside E1a/E3/E6.
+
+Pre-requisite: Pool.train in v2.2 must work first (Issue 1 wiring). E9 is Accelerate's wrapper around Pool.
+
+Risk: Accelerate may not expose a public `distributed_backend` plugin hook cleanly. If blocked, fall back to `macfleet.hf` — a thin wrapper that unwraps Accelerate configs and translates to Pool kwargs. Document either path.
+
+### DC3 applied: E5 direction inverted
+
+E5 was `Pool(burst_to='modal')` — local primary, cloud secondary.
+
+E5 is now **`Pool(origin='modal', burst_to='local')`** — cloud primary, Macs secondary. The "Modal user with idle Macs" story is bigger than "Mac user wanting cloud." Bidirectional is deferred to v3.1+ design doc.
+
+Updated E5 scope: cloud peer acts as rank 0 coordinator; local peers join via NAT traversal (Tailscale or similar). Design doc must spec: how local peers reach the cloud coordinator (reverse tunnel? Tailscale mesh? NAT punchthrough?), trust domain isolation still applies, cost controls stay.
+
+### DC4 applied: CLI shortcut `macfleet train <model> --dataset <name>`
+
+New v2.3 expansion item **E10**: first-class CLI shortcut for the 80% case.
+
+Syntax: `macfleet train llama-3-lora --dataset alpaca --epochs 3`
+- Built-in model catalog: llama-3-lora, mistral-lora, phi-3-lora, qwen-lora (all LoRA variants sized for Mac hardware)
+- Built-in dataset catalog: alpaca, dolly, oasst (curated for instruction tuning)
+- Emit a 2-line Python snippet users can copy for custom models
+
+~300 LOC. Matches Exo Labs' `exo run llama-3` keystroke count for the common case. Python SDK stays the primary for custom workflows.
+
+### DC5 applied: Issue 1 split + Phase A/B/C/D restructure
+
+**Issue 1a (v2.2 Phase C PR 8):** Pool.join + registry wiring + stub multi-process integration test
+- Pool.join() instantiates PoolAgent, starts discovery, waits for quorum_size with timeout
+- Pool.world_size reads from registry
+- Pool.nodes reads alive_nodes
+- Test: agents discover each other + quorum within 3s on localhost
+- ~250 LOC. Behind feature flag `enable_pool_distributed=False` default until 1b ships.
+
+**Issue 1b (v2.2 Phase C PR 9):** Pool.train + DataParallel wrapping + 30s allreduce timeout + late-joiner semantics + empty-dataset guard + atomic checkpoint
+- Pool.train builds PeerTransport mesh, CollectiveGroup, wraps engine in DataParallel, runs training_loop
+- A1 partition timeout, A4 dataset guard, A11 peer-join semantics, A3 atomic write
+- Flip feature flag default to True when 1b lands
+- Test: `test_multi_process_train` — full convergence across 3 subprocess peers
+- ~300 LOC.
+
+Revised v2.2 PR sequence (the final answer):
+
+| PR | Phase | Contents | Can ship as v2.1.x patch if later PRs block? |
+|---|---|---|---|
+| 1 | A | E8 CI/CD + stub test_multi_process.py (discovery + quorum) | YES (v2.1.2) |
+| 2 | A | Issue 5 port split 50051/50052 | YES (v2.1.3) |
+| 3 | B | Issue 9 + A6 + A12 — TLS + token 0600 | YES (v2.1.4) |
+| 4 | B | Issue 2 + A5 + A7 — signed HW profile + nonce + wire_version | YES (v2.1.5) |
+| 5 | B | Issue 6 — --peer capability exchange | YES (v2.1.6) |
+| 6 | B | Issue 22 — heartbeat rate limiter | YES (v2.1.7) |
+| 7 | B | Issue 20 + A2 + A8 — @macfleet.task + Pydantic schema | YES (v2.1.8) |
+| 8 | C | **Issue 1a** — Pool.join + registry wiring (feature flag off) | YES (v2.1.9) |
+| 9 | C | **Issue 1b** — Pool.train + DataParallel (feature flag on) | NO (requires 1a) |
+| 10 | C | Issue 25 — Pool.map/submit distributed | NO (requires 1a) |
+| 11 | C | E2 — Dashboard wiring (4h) | NO (requires agent running) |
+| 12 | C | E4 + A16 + A17 — thermal pause w/ coord broadcast | NO (requires Issue 1b) |
+| 13 | C | **Issue 26 promoted** — token QR/Bonjour/pasteboard | YES |
+| 14 | C | A9 — chaos test gate | NO (requires Issue 1b) |
+| 15 | D | D1 — docs site (mkdocs-material) | YES |
+| 16 | D | D5-D11 — README rewrite + DeprecationWarning + quickstart + PoolConfig + macfleet doctor enumeration | YES |
+| 17 | D | Manual multi-Mac smoke test | Release gate |
+| 18 | D | **WWDC hard pause June 1-10** | Scheduling gate |
+| 19 | D | Tag v2.2 release | After all above |
+
+Release bus factor: PRs 1-8 + 15-16 can ship as incremental v2.1.x patches even if Phase C blocks. Product pipeline (9-14) depends on Issue 1a. Phase C is the only linear dependency; everything else is parallelizable.
+

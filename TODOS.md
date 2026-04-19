@@ -52,3 +52,35 @@ Review history:
 - 2026-04-19 `/plan-eng-review` — 24 issues, 3 critical gaps, 1 strategic question
 - 2026-04-19 `/plan-ceo-review` — SCOPE EXPANSION mode, 8 expansions accepted, plan revised after spec review (quality 9/10) + outside voice (6 findings applied)
 - CEO plan: `~/.gstack/projects/vikranthreddimasu-MacFleet/ceo-plans/2026-04-19-macfleet-v3-cathedral.md`
+
+## autoplan additions (2026-04-19)
+
+### v2.3 additions (from /autoplan DX + Eng)
+
+- **E9 — HuggingFace Accelerate adapter.** `macfleet.accelerate` module implementing `DistributedType.MacFleet`. `Accelerator(distributed_backend="macfleet")` transparently uses MacFleet for training. ~200 LOC (fallback `macfleet.hf` wrapper if Accelerate doesn't expose plugin hooks). Ships alongside E1a/E3/E6.
+- **E10 — CLI shortcut `macfleet train <model> --dataset <name>`.** First-class CLI for the 80% case: `macfleet train llama-3-lora --dataset alpaca --epochs 3`. Built-in model + dataset catalogs. Matches Exo Labs keystroke count.
+- **A18 — msgpack fuzz test.** hypothesis-based fuzz for the wire deserialization. Catches malformed-payload DoS.
+- **A19 — CI matrix python 3.13 × MLX `continue-on-error: true`.** MLX wheels lag CPython.
+- **A20 — `--peer` race with mDNS dedupe test.** Concurrent discovery paths should dedupe by node_id.
+- **A21 — `macfleet rotate-token` CLI.** Generate new token, gossip-propagate, deprecate old.
+- **A22 — Pool.map distributed exception semantics.** `list[Result | Exception]` in input order.
+- **A25 — 10x gradient size OOM protection.** Pre-train memory check against device RAM.
+
+### v3.0 additions (from /autoplan)
+
+- **A23 — Ring allreduce N>8 hierarchical reduce (E9b).** Document ceiling, hard-warn above N=8, ship hierarchical topology for large fleets.
+- **A24 — E5 cloud burst trust domain isolation.** Modal peers form separate trust domain. Pre-commit block: `Pool(origin='modal', burst_to='local')` with untrusted local peers in registry = hard error.
+- **E5 direction inverted (DC3 accepted).** E5 is now `Pool(origin='modal', burst_to='local')`. Cloud primary, local Macs secondary. Bidirectional deferred to v3.1+ design doc.
+
+### Explicitly skipped (additions)
+
+- **Async / staleness-tolerant gradient sync** (unchanged from prior)
+- **Pipeline parallelism / tensor parallelism** (unchanged)
+- **Bidirectional E5 (local + cloud symmetric burst)** — deferred to v3.1+ separate design doc
+- **VS Code extension for distributed debugging** — too early, not on any release
+
+### Strategic calendar items (additions)
+
+- **2026-06-01 to 2026-06-10 — WWDC '26 hard pause.** No v2.2 release merges during keynote week. Read signals first.
+- **2027-06 — WWDC '27 revisit.** Repeat kill-switch eval.
+
