@@ -31,6 +31,7 @@ from macfleet.pool.network import LinkType, get_network_topology
 from macfleet.pool.registry import ClusterRegistry, NodeRecord
 from macfleet.security.auth import (
     HW_HANDSHAKE_MAX_JSON_BYTES,
+    AuthRateLimiter,
     HandshakeHwValidationError,
     SecurityConfig,
     create_client_ssl_context,
@@ -40,6 +41,13 @@ from macfleet.security.auth import (
     verify_heartbeat,
     verify_heartbeat_with_hw,
 )
+
+# v2.2 PR 6 (Issue 22): heartbeat read timeout tightened from 5s to 1s.
+# Rationale: a legitimate ping completes in <50ms on WiFi. The old 5s
+# timeout meant a burst of 100 attacker connections could stall the
+# event loop for 500s worth of pending reads. 1s is still generous for
+# a cross-continent round-trip but slams the door on slowloris-style DoS.
+HEARTBEAT_READ_TIMEOUT_SEC = 1.0
 
 console = Console()
 
@@ -194,6 +202,12 @@ class PoolAgent:
         self._heartbeat_ssl_ctx = None
         if self._security.tls:
             self._heartbeat_ssl_ctx = create_server_ssl_context()
+
+        # v2.2 PR 6 (Issue 22): per-IP rate limiter shared with the transport
+        # layer pattern — banned IPs get dropped without reading, repeat
+        # offenders see exponential backoff. Prevents a rogue node from
+        # brute-forcing fleet tokens through the heartbeat port.
+        self._heartbeat_rate_limiter = AuthRateLimiter()
 
     @property
     def node_id(self) -> str:
@@ -367,19 +381,50 @@ class PoolAgent:
         The 5-field variant is used by `--peer` manual-peer bootstrap (Issue 6)
         so manual peers can exchange real hardware info without mDNS TXT records.
         Server replies in matching format: 4-in → APONG 4-out, 5-in → APONG 5-out.
+
+        v2.2 PR 6 (Issue 22): per-IP rate limiting + tightened 1s read timeout.
+        Each failed auth increments a per-IP counter; 5 failures in a row earns
+        a 5-minute ban. A banned IP is disconnected before we even read.
         """
         fleet_key = self._security.fleet_key
+
+        # Per-IP rate limiting: reject banned IPs before any I/O.
+        peername = writer.get_extra_info("peername")
+        peer_ip = peername[0] if peername else "unknown"
+        if self._heartbeat_rate_limiter.is_banned(peer_ip):
+            logger.warning("Heartbeat: rate-limited banned IP %s", peer_ip)
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (OSError, ssl.SSLError, BrokenPipeError, ConnectionResetError):
+                pass
+            return
+
+        # Exponential backoff for IPs with recent failures — slows down
+        # brute-force attempts without rejecting outright.
+        delay = self._heartbeat_rate_limiter.get_delay(peer_ip)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
         try:
-            data = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            data = await asyncio.wait_for(
+                reader.readline(), timeout=HEARTBEAT_READ_TIMEOUT_SEC,
+            )
 
             if fleet_key and data.startswith(b"APING"):
                 # Authenticated heartbeat
                 parts = data.decode().strip().split(" ")
                 if len(parts) == 4:
                     _, peer_node_id, nonce_hex, sig_hex = parts
-                    nonce = bytes.fromhex(nonce_hex)
-                    sig = bytes.fromhex(sig_hex)
+                    try:
+                        nonce = bytes.fromhex(nonce_hex)
+                        sig = bytes.fromhex(sig_hex)
+                    except ValueError:
+                        self._heartbeat_rate_limiter.record_failure(peer_ip)
+                        logger.debug("APING v1 malformed hex from %s", peer_ip)
+                        return
                     if verify_heartbeat(fleet_key, peer_node_id, nonce, sig):
+                        self._heartbeat_rate_limiter.record_success(peer_ip)
                         # Send authenticated PONG (v2.1 legacy format)
                         resp_nonce = secrets_mod.token_bytes(16)
                         resp_sig = sign_heartbeat(fleet_key, self.node_id, resp_nonce)
@@ -388,6 +433,7 @@ class PoolAgent:
                         )
                         await writer.drain()
                     else:
+                        self._heartbeat_rate_limiter.record_failure(peer_ip)
                         logger.debug("Heartbeat auth failed from peer %s", peer_node_id)
                 elif len(parts) == 5:
                     # v2.2: carries peer HW profile
@@ -397,9 +443,11 @@ class PoolAgent:
                         sig = bytes.fromhex(sig_hex)
                         hw_json = bytes.fromhex(hw_hex)
                     except ValueError:
+                        self._heartbeat_rate_limiter.record_failure(peer_ip)
                         logger.debug("APING v2 from %s: malformed hex", peer_node_id)
                         return
                     if len(hw_json) > HW_HANDSHAKE_MAX_JSON_BYTES:
+                        self._heartbeat_rate_limiter.record_failure(peer_ip)
                         logger.debug(
                             "APING v2 from %s: HW payload %dB exceeds max %dB",
                             peer_node_id, len(hw_json), HW_HANDSHAKE_MAX_JSON_BYTES,
@@ -408,8 +456,10 @@ class PoolAgent:
                     if not verify_heartbeat_with_hw(
                         fleet_key, peer_node_id, nonce, hw_json, sig,
                     ):
+                        self._heartbeat_rate_limiter.record_failure(peer_ip)
                         logger.debug("APING v2 auth failed from peer %s", peer_node_id)
                         return
+                    self._heartbeat_rate_limiter.record_success(peer_ip)
                     # Reply with APONG v2 (5-field) carrying local HW
                     resp_nonce = secrets_mod.token_bytes(16)
                     try:
@@ -428,14 +478,27 @@ class PoolAgent:
                     )
                     await writer.drain()
                 else:
-                    logger.debug("APING malformed (%d fields) from unknown peer", len(parts))
+                    self._heartbeat_rate_limiter.record_failure(peer_ip)
+                    logger.debug("APING malformed (%d fields) from %s", len(parts), peer_ip)
             elif not fleet_key and data.startswith(b"PING"):
                 # Open heartbeat (backward compatible)
                 writer.write(f"PONG {self.node_id}\n".encode())
                 await writer.drain()
-            # If secure but received plain PING, or open but received APING: silently ignore
+            elif fleet_key:
+                # Secure server got a non-APING message → treat as a failed
+                # auth attempt. Plain PINGs against an auth'd fleet are
+                # either a misconfigured client or an attacker probing.
+                self._heartbeat_rate_limiter.record_failure(peer_ip)
+                logger.debug(
+                    "Heartbeat from %s: secure server received non-APING (%r)",
+                    peer_ip, data[:32],
+                )
+            # Else: open server got a non-PING message — silently ignore (no auth loss)
 
-        except (asyncio.TimeoutError, ConnectionResetError, ValueError):
+        except asyncio.TimeoutError:
+            # Slow/stalled connection — treat as a failure to deter slowloris.
+            self._heartbeat_rate_limiter.record_failure(peer_ip)
+        except (ConnectionResetError, ValueError):
             pass
         finally:
             try:
