@@ -338,10 +338,15 @@ class PoolAgent:
             on_recovered=self._on_peer_recovered,
         )
 
-        # Start heartbeat responder server (TLS when auth is enabled)
+        # Start heartbeat responder server (TLS when auth is enabled).
+        # reuse_address=True lets us rebind the same port after a clean stop
+        # even while the previous socket is in TIME_WAIT. Without it, rapid
+        # start/stop cycles (especially in CI tests) see ephemeral-port
+        # conflicts and "Address already in use" errors.
         self._heartbeat_server = await asyncio.start_server(
             self._handle_heartbeat_ping, "0.0.0.0", self.port,
             ssl=self._heartbeat_ssl_ctx,
+            reuse_address=True,
         )
 
         await self._heartbeat.start()
