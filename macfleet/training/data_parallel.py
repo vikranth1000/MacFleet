@@ -162,20 +162,27 @@ class DataParallel:
     async def _validate_model_consistency(self) -> None:
         """Verify all nodes have the same model architecture.
 
-        Gathers param counts from every rank — if any disagree, raise
-        with the per-rank breakdown so the user can see WHICH node
-        loaded the wrong model. Falls back to allreduce-sum if gather
-        is unavailable for any reason (so the original cheap check
-        still fires).
+        Every rank runs the collectives (gather + allreduce) in the
+        same order so a peer raising on rank 0 can't deadlock the
+        ring. Rank 0 captures the per-rank breakdown for a richer
+        error message; all ranks check the cheaper allreduce-sum
+        afterwards. Either rank 0's gather-based error or every
+        rank's sum-mismatch error fires, never neither.
         """
         local_count = len(self.engine.get_flat_parameters())
         count_array = np.array([local_count], dtype=np.float64)
 
+        # Step 1: gather counts to rank 0 (every rank participates).
         try:
             gathered = await self.group.gather(count_array, dst=0)
         except Exception:
             gathered = None
 
+        # Step 2: allreduce-sum (every rank participates BEFORE any raise).
+        summed = await self.group.allreduce(count_array, op="sum")
+        expected = local_count * self.world_size
+
+        # Step 3: rank 0 raises the rich error if gather caught a mismatch.
         if self.rank == 0 and gathered is not None:
             counts = [int(gathered[r][0]) for r in range(self.world_size)]
             if len(set(counts)) > 1:
@@ -187,10 +194,7 @@ class DataParallel:
                     "All nodes must load the same model."
                 )
 
-        # Cheaper sum check that every rank can run; catches the case
-        # where gather isn't reachable but counts still disagree.
-        summed = await self.group.allreduce(count_array, op="sum")
-        expected = local_count * self.world_size
+        # Step 4: every rank raises on sum mismatch (covers gather failure path).
         if int(summed[0]) != expected:
             raise RuntimeError(
                 f"Model architecture mismatch: this node (rank {self.rank}) has "
