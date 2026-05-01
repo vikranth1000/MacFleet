@@ -81,6 +81,10 @@ class DataParallel:
         self._step_count = 0
         self._sync_time_sec = 0.0
         self._bytes_sent = 0
+        # _bytes_saved is reserved for the future sparse-on-wire path
+        # (TODOS Issue 3). v2.2 transmits dense gradients, so it stays
+        # 0. Kept on the instance so the existing compression_ratio
+        # property stays defined; remove together with Issue 3 wiring.
         self._bytes_saved = 0
         self._expected_grad_size: Optional[int] = None
 
@@ -108,7 +112,14 @@ class DataParallel:
 
     @property
     def compression_ratio(self) -> float:
-        """Overall compression ratio (bytes sent / bytes uncompressed)."""
+        """Overall compression ratio (bytes sent / bytes uncompressed).
+
+        v2.2 transmits dense gradients on the wire (sparse-on-wire is
+        TODOS Issue 3). This property therefore returns 1.0 in v2.2 —
+        compression is applied locally but the wire payload size is
+        unchanged. Once sparse-on-wire lands, _bytes_saved will track
+        the real reduction and this ratio will go below 1.0.
+        """
         total = self._bytes_sent + self._bytes_saved
         if total == 0:
             return 1.0
