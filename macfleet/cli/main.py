@@ -380,6 +380,9 @@ def _train_from_script(
 
     # Load user script
     spec = importlib.util.spec_from_file_location("user_train", script)
+    if spec is None or spec.loader is None:
+        console.print(f"[red]Error: Cannot load script '{script}' as a Python module.[/red]")
+        sys.exit(1)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
@@ -420,6 +423,9 @@ def run_command(script: str, fn_name: str, token: str | None, open_fleet: bool):
 
     # Load user script
     spec = importlib.util.spec_from_file_location("user_script", script)
+    if spec is None or spec.loader is None:
+        console.print(f"[red]Error: Cannot load script '{script}' as a Python module.[/red]")
+        sys.exit(1)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
