@@ -106,17 +106,20 @@ def build_node_health_for_peers(agent: PoolAgent) -> list[NodeHealth]:
         health = NodeHealth(
             node_id=record.node_id,
             timestamp=time.time(),
-            status=HealthStatus.HEALTHY,  # alive in registry → assume healthy
+            status=HealthStatus.UNKNOWN,  # reclassified from health_score below
             thermal=None,  # No gossip channel yet; see docstring
             memory=None,
             loss_trend="stable",
             throughput_samples_sec=0.0,
             avg_sync_time_sec=0.0,
         )
-        # Stub thermal from the hardware profile (set at join time)
+        # Stub thermal from the hardware profile (set at join time / refreshed
+        # by gossip) so a peer reporting SERIOUS pressure shows as DEGRADED
+        # rather than the hardcoded HEALTHY the previous code emitted.
         if hw.thermal_pressure:
             from macfleet.monitoring.thermal import ThermalState
             health.thermal = ThermalState(pressure=hw.thermal_pressure)
+        health.status = classify_health(health.health_score)
         out.append(health)
     return out
 
