@@ -538,14 +538,22 @@ class PoolAgent:
                 writer.write(f"PONG {self.node_id}\n".encode())
                 await writer.drain()
             elif fleet_key:
-                # Secure server got a non-APING message → treat as a failed
-                # auth attempt. Plain PINGs against an auth'd fleet are
-                # either a misconfigured client or an attacker probing.
-                self._heartbeat_rate_limiter.record_failure(peer_ip)
-                logger.debug(
-                    "Heartbeat from %s: secure server received non-APING (%r)",
-                    peer_ip, data[:32],
-                )
+                # Secure server got a non-APING message. Empty data
+                # (immediate EOF from a port scanner / TCP RST) is benign
+                # noise; only count an actual non-empty payload as a
+                # failed auth attempt. This avoids banning a colleague's
+                # `nc localhost 50051` after a few exploratory connects.
+                if data:
+                    self._heartbeat_rate_limiter.record_failure(peer_ip)
+                    logger.debug(
+                        "Heartbeat from %s: secure server received non-APING (%r)",
+                        peer_ip, data[:32],
+                    )
+                else:
+                    logger.debug(
+                        "Heartbeat from %s: empty payload, not counted as failure",
+                        peer_ip,
+                    )
             # Else: open server got a non-PING message — silently ignore (no auth loss)
 
         except asyncio.TimeoutError:
