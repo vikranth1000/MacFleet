@@ -566,6 +566,7 @@ class PoolAgent:
         If the peer responds with APONG v1 (4-field), falls back to zero-HW
         placeholder for v2.1 compat.
         """
+        writer: Optional[asyncio.StreamWriter] = None
         try:
             if ":" in peer_addr:
                 host, port_str = peer_addr.rsplit(":", 1)
@@ -607,13 +608,6 @@ class PoolAgent:
                 writer.write(f"PING {self.node_id}\n".encode())
                 await writer.drain()
                 response = await asyncio.wait_for(reader.readline(), timeout=10.0)
-
-            # Close connection gracefully
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except (OSError, ssl.SSLError, BrokenPipeError, ConnectionResetError):
-                pass
 
             peer_hw: Optional[HardwareExchange] = None
             peer_data_port = port + 1
@@ -726,6 +720,13 @@ class PoolAgent:
         except (OSError, ssl.SSLError, asyncio.TimeoutError, ConnectionRefusedError, ValueError) as e:
             console.print(f"[red]Failed to connect to peer {peer_addr}: {type(e).__name__}: {e}[/red]")
             console.print("[dim]Make sure the peer is running 'macfleet join' and is reachable[/dim]")
+        finally:
+            if writer is not None:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except (OSError, ssl.SSLError, BrokenPipeError, ConnectionResetError, asyncio.TimeoutError):
+                    pass
 
     def _on_peer_discovered(self, node: DiscoveredNode) -> None:
         """Called when a new peer is discovered via mDNS."""
