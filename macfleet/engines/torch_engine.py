@@ -172,17 +172,31 @@ class TorchEngine:
     # ------------------------------------------------------------------ #
 
     def profile(self) -> HardwareProfile:
-        """Profile local hardware."""
-        return HardwareProfile(
-            hostname=socket.gethostname(),
-            node_id=f"{socket.gethostname()}-torch",
-            gpu_cores=0,
-            ram_gb=0.0,
-            memory_bandwidth_gbps=0.0,
-            has_ane=True,
-            chip_name="Unknown",
-            mps_available=torch.backends.mps.is_available(),
-        )
+        """Profile local hardware.
+
+        Delegates to macfleet.pool.agent.profile_hardware() so the engine
+        returns the same gpu_cores / ram_gb / chip_name fields the
+        PoolAgent would advertise. Falls back to a zero profile if the
+        macOS detection helpers fail (e.g. on Linux during framework-
+        agnostic CI).
+        """
+        try:
+            from macfleet.pool.agent import profile_hardware
+            hw = profile_hardware()
+            hw.node_id = f"{hw.hostname}-torch"
+            hw.mps_available = torch.backends.mps.is_available()
+            return hw
+        except Exception:
+            return HardwareProfile(
+                hostname=socket.gethostname(),
+                node_id=f"{socket.gethostname()}-torch",
+                gpu_cores=0,
+                ram_gb=0.0,
+                memory_bandwidth_gbps=0.0,
+                has_ane=True,
+                chip_name="Unknown",
+                mps_available=torch.backends.mps.is_available(),
+            )
 
     def param_count(self) -> int:
         """Total trainable parameters."""
