@@ -231,22 +231,33 @@ class Dashboard:
 
     def update_training(
         self,
-        epoch: int = 0,
-        total_epochs: int = 0,
-        step: int = 0,
-        loss: float = 0.0,
-        throughput: float = 0.0,
-        elapsed_sec: float = 0.0,
-        compression_ratio: float = 1.0,
+        epoch: Optional[int] = None,
+        total_epochs: Optional[int] = None,
+        step: Optional[int] = None,
+        loss: Optional[float] = None,
+        throughput: Optional[float] = None,
+        elapsed_sec: Optional[float] = None,
+        compression_ratio: Optional[float] = None,
     ) -> None:
-        """Update training progress."""
-        if epoch: self._epoch = epoch
-        if total_epochs: self._total_epochs = total_epochs
-        if step: self._step = step
-        if loss: self._loss = loss
-        if throughput: self._throughput = throughput
-        if elapsed_sec: self._elapsed_sec = elapsed_sec
-        if compression_ratio < 1.0: self._compression_ratio = compression_ratio
+        """Update training progress.
+
+        Each arg is None to keep the previous value. Use 0 / 0.0
+        explicitly to clear (e.g. epoch=0 in the warmup display).
+        """
+        if epoch is not None:
+            self._epoch = epoch
+        if total_epochs is not None:
+            self._total_epochs = total_epochs
+        if step is not None:
+            self._step = step
+        if loss is not None:
+            self._loss = loss
+        if throughput is not None:
+            self._throughput = throughput
+        if elapsed_sec is not None:
+            self._elapsed_sec = elapsed_sec
+        if compression_ratio is not None:
+            self._compression_ratio = compression_ratio
         self._refresh()
 
     def update_nodes(self, nodes: list[NodeHealth]) -> None:
