@@ -31,23 +31,33 @@ def _dataset_len(dataset: Any) -> int:
 
     Supports:
         - Objects with __len__ (PyTorch Dataset, lists, etc.)
-        - (X, y) tuples where X is sized
+        - (X, y) tuples where both halves have a .shape attribute
+          (numpy array, torch tensor, mlx array, pandas DataFrame).
         - Anything else: raises TypeError so the caller can skip the guard
+
+    Bare ``[a, b]`` lists are treated as a 2-element list of samples,
+    not as an (X, y) pair. This matches PyTorch's convention where
+    (X, y) usually arrives as a tuple of arrays/tensors.
 
     v2.2 PR 9 (A4): used by Pool.train's preflight guard.
     """
-    if isinstance(dataset, (tuple, list)) and len(dataset) == 2:
-        # (X, y) pair shape
-        inner = dataset[0]
-        if hasattr(inner, "__len__"):
-            return len(inner)
-        if hasattr(inner, "shape") and len(inner.shape) > 0:
-            return int(inner.shape[0])
+    if (
+        isinstance(dataset, tuple)
+        and len(dataset) == 2
+        and hasattr(dataset[0], "shape")
+        and hasattr(dataset[1], "shape")
+    ):
+        x = dataset[0]
+        y = dataset[1]
+        n_x = x.shape[0] if hasattr(x.shape, "__len__") and len(x.shape) > 0 else None
+        n_y = y.shape[0] if hasattr(y.shape, "__len__") and len(y.shape) > 0 else None
+        if n_x is not None and n_y is not None and int(n_x) == int(n_y):
+            return int(n_x)
     if hasattr(dataset, "__len__"):
         return len(dataset)
     raise TypeError(
         f"Cannot determine size of dataset {type(dataset).__name__}; "
-        f"provide a Dataset with __len__ or an (X, y) tuple."
+        f"provide a Dataset with __len__ or an (X, y) tuple of arrays."
     )
 
 
