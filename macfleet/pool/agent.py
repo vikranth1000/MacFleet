@@ -63,8 +63,13 @@ def _pick_ephemeral_port(exclude: int = 0) -> int:
     port=0 data_port=0, we bind the heartbeat server first to lock
     `self.port`, then call this to pick `self.data_port`. Rare 1-in-60k
     case of the kernel handing back the same port is handled by a retry.
+
+    Returns the first port distinct from `exclude` from up to 32 tries
+    (doubled from 16 to give the kernel breathing room under contention
+    on tightly-loaded CI runners).
     """
-    for _ in range(16):
+    last_seen = -1
+    for _ in range(32):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -72,9 +77,13 @@ def _pick_ephemeral_port(exclude: int = 0) -> int:
             port = s.getsockname()[1]
         finally:
             s.close()
+        last_seen = port
         if port != exclude:
             return port
-    raise RuntimeError(f"could not pick an ephemeral port distinct from {exclude} after 16 tries")
+    raise RuntimeError(
+        f"could not pick an ephemeral port distinct from {exclude} after 32 tries "
+        f"(last kernel-assigned port: {last_seen})"
+    )
 
 
 def _detect_chip_name() -> str:
