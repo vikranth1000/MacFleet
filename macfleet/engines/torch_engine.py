@@ -69,10 +69,20 @@ class TorchEngine:
     # ------------------------------------------------------------------ #
 
     def load_model(self, model: Any, optimizer: Any | None = None) -> None:
-        """Load model and optimizer onto the target device."""
+        """Load model and optimizer onto the target device.
+
+        Note: trainable params are recomputed on every gradient call
+        rather than cached here, so requires_grad toggles (e.g. LoRA
+        freeze schedules) take effect mid-training without reloading.
+        """
         self._model = model.to(self._device)
         self._optimizer = optimizer
-        self._trainable_params = [p for p in self._model.parameters() if p.requires_grad]
+        self._trainable_params = self._collect_trainable_params()
+
+    def _collect_trainable_params(self) -> list[nn.Parameter]:
+        if self._model is None:
+            return []
+        return [p for p in self._model.parameters() if p.requires_grad]
 
     def forward(self, batch: dict[str, Any]) -> Any:
         """Run forward pass. Accepts dict or positional args."""
@@ -110,7 +120,7 @@ class TorchEngine:
             1D float32 numpy array of all gradients concatenated.
         """
         grads = []
-        for param in self._trainable_params:
+        for param in self._collect_trainable_params():
             if param.grad is not None:
                 grads.append(param.grad.detach().cpu().float().numpy().flatten())
             else:
@@ -128,7 +138,7 @@ class TorchEngine:
         with optimizers that cache references to .grad.
         """
         offset = 0
-        for param in self._trainable_params:
+        for param in self._collect_trainable_params():
             numel = param.numel()
             grad_data = flat_grads[offset : offset + numel].reshape(param.shape)
             new_grad = torch.from_numpy(grad_data.copy()).to(self._device)
@@ -141,7 +151,7 @@ class TorchEngine:
     def get_flat_parameters(self) -> np.ndarray:
         """Flatten all parameters into a single numpy array (for broadcast)."""
         params = []
-        for param in self._trainable_params:
+        for param in self._collect_trainable_params():
             params.append(param.detach().cpu().float().numpy().flatten())
         if not params:
             return np.array([], dtype=np.float32)
@@ -150,7 +160,7 @@ class TorchEngine:
     def apply_flat_parameters(self, flat_params: np.ndarray) -> None:
         """Write flat parameters back to model (after broadcast)."""
         offset = 0
-        for param in self._trainable_params:
+        for param in self._collect_trainable_params():
             numel = param.numel()
             data = flat_params[offset : offset + numel].reshape(param.shape)
             param.data.copy_(torch.from_numpy(data.copy()).to(self._device))
@@ -210,7 +220,9 @@ class TorchEngine:
 
     def param_count(self) -> int:
         """Total trainable parameters."""
-        return sum(p.numel() for p in self._trainable_params) if self._model else 0
+        if not self._model:
+            return 0
+        return sum(p.numel() for p in self._collect_trainable_params())
 
     def memory_usage_gb(self) -> float:
         """Current memory usage in GB (params + gradients)."""
