@@ -87,7 +87,8 @@ spans both Macs.
 - **Safe task dispatch** — `@macfleet.task` registry + msgpack args
   (no cloudpickle on the wire)
 - **Adaptive compression** — auto-selects TopK + FP16 based on link
-  speed (1x–200x reduction)
+  speed (locally; sparse-on-wire arrives in v2.3, see TODOS.md
+  Issue 3)
 - **Heterogeneous scheduling** — faster Macs get bigger batches,
   adjusts for thermal throttling
 - **Secure by default** — auto-generated fleet tokens, HMAC mutual
@@ -134,11 +135,16 @@ MacFleet uses **data parallelism**: every Mac holds a full copy of the
 model, trains on a weighted portion of the data, and averages
 gradients via Ring AllReduce after each step.
 
-| Network       | Compression     | 100 MB gradients become |
-|---------------|-----------------|-------------------------|
-| Thunderbolt 4 | None            | 100 MB                  |
-| Ethernet      | TopK 10% + FP16 | ~5 MB                   |
-| WiFi          | TopK 1% + FP16  | ~500 KB                 |
+The compression layer (TopK + FP16) is applied locally before the
+allreduce; v2.2 transmits dense gradients on the wire (sparse
+allreduce is on the v2.3 roadmap as Issue 3). The bandwidth savings
+table below describes the **target** ratios once sparse-on-wire ships:
+
+| Network       | Compression     | 100 MB gradients (v2.3 target) |
+|---------------|-----------------|--------------------------------|
+| Thunderbolt 4 | None            | 100 MB                         |
+| Ethernet      | TopK 10% + FP16 | ~5 MB                          |
+| WiFi          | TopK 1% + FP16  | ~500 KB                        |
 
 ## Requirements
 
