@@ -6,10 +6,23 @@ Zero-config discovery. Framework-agnostic engines. Adaptive networking.
 """
 
 import logging
+from typing import TYPE_CHECKING
 
 __version__ = "2.2.0rc1"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
+
+# Type checkers see real symbols here; runtime uses __getattr__ below to
+# keep heavy framework imports off the cold path.
+if TYPE_CHECKING:
+    from macfleet.compute.models import RemoteTaskError, TaskFuture
+    from macfleet.compute.registry import task
+    from macfleet.engines.mlx_engine import MLXEngine
+    from macfleet.engines.torch_engine import TorchEngine
+    from macfleet.sdk.decorators import distributed
+    from macfleet.sdk.pool import Pool
+    from macfleet.sdk.train import train
+    from macfleet.training.data_parallel import DataParallel
 
 
 def __getattr__(name: str):
