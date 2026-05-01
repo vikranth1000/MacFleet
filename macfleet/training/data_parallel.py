@@ -218,7 +218,11 @@ class DataParallel:
 
         original_bytes = flat_grads.nbytes
 
-        # Compress if active
+        # Compress if active. NOTE: until sparse-on-wire (TODOS Issue 3),
+        # compressed gradients are decompressed locally before allreduce,
+        # so the wire payload is dense regardless. _bytes_sent therefore
+        # reflects ACTUAL wire bytes, not the compressed size of the
+        # local sparsification. _bytes_saved stays 0 in v2.2.
         try:
             if self._compressor is not None and self._compressor.active:
                 compressed = self._compressor.compress(flat_grads)
@@ -226,11 +230,9 @@ class DataParallel:
                 if isinstance(compressed, CompressedArray):
                     sparse_grads = self._compressor.decompress(compressed)
                     averaged = await self.group.allreduce(sparse_grads, op="mean")
-                    self._bytes_sent += compressed.compressed_size
-                    self._bytes_saved += original_bytes - compressed.compressed_size
                 else:
                     averaged = await self.group.allreduce(compressed, op="mean")
-                    self._bytes_sent += original_bytes
+                self._bytes_sent += original_bytes
             else:
                 # No compression
                 averaged = await self.group.allreduce(flat_grads, op="mean")
