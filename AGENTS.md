@@ -9,7 +9,7 @@ MacFleet pools multiple Apple Silicon Macs into a single distributed ML training
 - **Version**: 2.0.0
 - **Language**: Python 3.11+
 - **Platform**: macOS only (Apple Silicon)
-- **Tests**: 371, run with `make test` or `python -m pytest tests/ -v`
+- **Tests**: 447, run with `make test` or `python -m pytest tests/ -v`
 - **Package**: `pip install macfleet`
 
 ## Critical Architecture Rule
@@ -188,7 +188,7 @@ Per-direction locks (`_send_lock`, `_recv_lock`) allow safe concurrent allreduce
 ### Running tests
 
 ```bash
-make test                                        # all 268 tests
+make test                                        # all 447 tests
 python -m pytest tests/test_engines/ -v          # just engine tests
 python -m pytest tests/ -k "allreduce" -v        # tests matching keyword
 python -m pytest tests/test_engines/test_mlx_engine.py -v  # single file

@@ -171,7 +171,7 @@ read the Markdown source in `docs/`:
 git clone https://github.com/vikranthreddimasu/MacFleet.git
 cd MacFleet
 pip install -e ".[dev,all]"
-make test       # 425+ tests
+make test       # 447 tests
 make lint       # ruff + mypy
 ```
 
