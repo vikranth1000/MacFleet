@@ -263,7 +263,11 @@ async def measure_bandwidth(
 ) -> float:
     """Measure TCP bandwidth to a peer in Mbps.
 
-    Sends a payload and measures transfer time.
+    Sends a payload, waits for the receiver to close the connection
+    (signaling it has drained the bytes), and divides total elapsed
+    time by payload size. The wait_closed() bound is the closest the
+    stdlib affords to a real ACK — without it, writer.drain() only
+    confirms the kernel send buffer received the bytes, not the wire.
     Requires a listening peer that accepts and discards data.
     """
     payload_bytes = int(payload_mb * 1024 * 1024)
@@ -284,6 +288,18 @@ async def measure_bandwidth(
             await writer.drain()
             sent += to_send
 
+        # Half-close the writer side so the peer sees EOF, then wait
+        # for the connection to fully close — this is our acknowledgement
+        # signal that everything we sent has actually been read on the
+        # other end (or the receiver hung up). Either way, the elapsed
+        # time more closely reflects wire bandwidth than the local
+        # send-buffer drain time alone.
+        if writer.can_write_eof():
+            writer.write_eof()
+        try:
+            await asyncio.wait_for(reader.read(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
         elapsed = time.monotonic() - start
         writer.close()
         await writer.wait_closed()
