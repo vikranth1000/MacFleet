@@ -135,8 +135,11 @@ validation on the worker side — bad args surface as
   server side but a trusted peer isn't rate-limited for its own
   requests.
 - **Timing attacks on HMAC.** We use `hmac.compare_digest` everywhere,
-  which is constant-time, but the surrounding code (e.g. error
-  message logging) may leak small amounts of timing info.
+  which is constant-time, but the surrounding code (rate-limiter
+  bookkeeping, error message logging, exception type branching) may
+  leak small amounts of timing info that an on-LAN attacker could
+  amplify across many attempts. The rate limiter caps practical
+  exploitability at ~5 attempts per IP per ban window.
 - **TLS cert rotation during a long session.** Certs are session-local;
   if a run goes 48+ hours you're still using the same ephemeral cert.
   Fine in practice but worth knowing.
