@@ -35,14 +35,16 @@ def _dataset_len(dataset: Any) -> int:
           (numpy array, torch tensor, mlx array, pandas DataFrame).
         - Anything else: raises TypeError so the caller can skip the guard
 
-    Bare ``[a, b]`` lists are treated as a 2-element list of samples,
-    not as an (X, y) pair. This matches PyTorch's convention where
-    (X, y) usually arrives as a tuple of arrays/tensors.
+    Both `(X, y)` tuples and `[X, y]` lists are accepted as paired
+    inputs as long as both halves expose a matching .shape[0]. This
+    matches what Pool._train_torch / Pool._train_mlx accept downstream.
+    A plain non-paired list (no .shape on the elements, or mismatched
+    leading dims) falls through to len() like any other sized object.
 
     v2.2 PR 9 (A4): used by Pool.train's preflight guard.
     """
     if (
-        isinstance(dataset, tuple)
+        isinstance(dataset, (tuple, list))
         and len(dataset) == 2
         and hasattr(dataset[0], "shape")
         and hasattr(dataset[1], "shape")
