@@ -194,7 +194,7 @@ def _ip_to_interface(ip: str) -> Optional[str]:
 
 
 def _parse_ifconfig() -> list[NetworkLink]:
-    """Parse ifconfig output to get all interfaces."""
+    """Parse ifconfig output to get all interfaces (IPv4 + IPv6)."""
     links = []
     try:
         result = subprocess.run(
@@ -208,10 +208,25 @@ def _parse_ifconfig() -> list[NetworkLink]:
         for line in result.stdout.split("\n"):
             if not line.startswith("\t") and ":" in line:
                 current_iface = line.split(":")[0]
-            if "inet " in line and current_iface and current_iface != "lo0":
-                parts = line.strip().split()
+            if not current_iface or current_iface == "lo0":
+                continue
+            stripped = line.strip()
+            if stripped.startswith("inet "):
+                parts = stripped.split()
                 if len(parts) >= 2:
                     ip = parts[1]
+                    link_type = _classify_interface(current_iface, ip)
+                    links.append(NetworkLink(
+                        interface=current_iface,
+                        link_type=link_type,
+                        ip_address=ip,
+                    ))
+            elif stripped.startswith("inet6 "):
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    # macOS prints "inet6 fe80::abc%en0" — strip the
+                    # zone-id suffix so the IP we store is portable.
+                    ip = parts[1].split("%", 1)[0]
                     link_type = _classify_interface(current_iface, ip)
                     links.append(NetworkLink(
                         interface=current_iface,
