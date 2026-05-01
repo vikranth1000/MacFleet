@@ -87,6 +87,10 @@ class TaskWorker:
         self._max_workers = max_workers or min(os.cpu_count() or 1, 4)
         self._executor: Optional[ThreadPoolExecutor] = None
         self._listener_task: Optional[asyncio.Task] = None
+        # Strong-ref every spawned _execute_and_reply task so Python's GC
+        # can't collect them mid-run (asyncio create_task is fire-and-forget
+        # with only a weak reference inside the event loop).
+        self._inflight: set[asyncio.Task] = set()
         self._running = False
 
     async def start(self) -> None:
@@ -108,8 +112,14 @@ class TaskWorker:
                 await self._listener_task
             except asyncio.CancelledError:
                 pass
+        # Drain in-flight task wrappers so their results get sent before
+        # we tear down the transport. Each wrapper is bounded by its own
+        # timeout_sec, so this can't hang forever in steady state.
+        if self._inflight:
+            await asyncio.gather(*self._inflight, return_exceptions=True)
+            self._inflight.clear()
         if self._executor:
-            self._executor.shutdown(wait=False)
+            self._executor.shutdown(wait=True)
             self._executor = None
 
     async def _listen_tasks(self) -> None:
@@ -126,7 +136,9 @@ class TaskWorker:
                 )
                 if msg.msg_type == MessageType.TASK:
                     spec = TaskSpec.unpack(msg.payload)
-                    asyncio.create_task(self._execute_and_reply(spec))
+                    inflight = asyncio.create_task(self._execute_and_reply(spec))
+                    self._inflight.add(inflight)
+                    inflight.add_done_callback(self._inflight.discard)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
