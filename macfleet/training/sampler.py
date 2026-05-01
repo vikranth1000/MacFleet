@@ -64,11 +64,18 @@ class WeightedDistributedSampler(Sampler[int]):
         self.total_size = sum(self._sample_counts)
 
     def _compute_sample_counts(self, total_size: int) -> list[int]:
-        """Compute number of samples for each rank based on weights."""
-        counts = []
+        """Compute number of samples for each rank based on weights.
+
+        With drop_last=True, every rank gets floor(total * weight) so the
+        per-rank count is deterministic across ranks; the remainder is
+        dropped. With drop_last=False (default), the last rank picks up
+        the remainder so no sample is skipped.
+        """
+        counts: list[int] = []
         remaining = total_size
         for i, weight in enumerate(self.weights):
-            if i == len(self.weights) - 1:
+            is_last = i == len(self.weights) - 1
+            if is_last and not self.drop_last:
                 counts.append(remaining)
             else:
                 count = int(total_size * weight)
