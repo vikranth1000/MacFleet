@@ -306,7 +306,8 @@ class Pool:
             compression: Compression type.
 
         Returns:
-            Dict with training results: {loss, epochs, time_sec, steps}.
+            Dict with training results:
+            ``{loss, loss_history, epochs, time_sec, steps}``.
         """
         if not self._joined:
             raise RuntimeError("Must join pool before training. Use Pool as context manager.")
