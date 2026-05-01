@@ -28,6 +28,7 @@ def atomic_write_bytes(
     path: Union[str, Path],
     data: bytes,
     fsync_dir: bool = False,
+    mode: int = 0o644,
 ) -> None:
     """Write `data` to `path` atomically.
 
@@ -37,6 +38,9 @@ def atomic_write_bytes(
         fsync_dir: If True, fsync the containing directory after the
             rename so the directory entry itself is durable. Adds a
             few ms per save; enable for paranoid deployments.
+        mode: POSIX permission bits for the temp file (and therefore
+            the destination after rename). Default 0o644. Use 0o600
+            for sensitive payloads (tokens, keys, encrypted ckpts).
 
     Raises:
         OSError: If the write or rename fails. In that case the temp
@@ -50,7 +54,7 @@ def atomic_write_bytes(
     parent.mkdir(parents=True, exist_ok=True)
     try:
         # Write + fsync the data file
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
         try:
             written = 0
             while written < len(data):
