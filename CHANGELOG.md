@@ -4,6 +4,116 @@ All notable changes to MacFleet. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] — 2026-05-01
+
+Graduates v2.2.0-rc1 to stable. Same shipped features (Phase B
+security + Phase C product) plus the post-rc bug-fix + test-coverage
+sweep. Test surface grew from 447 (rc1) to 700+ — fuzz + stress +
+failure-injection + multi-node E2E suites added.
+
+### Fixed (post-rc bug sweep)
+
+- **Concurrency:** `ClusterRegistry.update_hardware` now replaces the
+  entire `NodeRecord` atomically inside the lock (was field-level
+  mutation, exposed torn `(hardware, data_port)` reads to the
+  scheduler).
+- **Concurrency:** registry mutation methods + election share one
+  lock acquisition (was release/re-acquire window).
+- **Network:** `DataParallel.sync_gradients` now catches
+  `asyncio.IncompleteReadError` + `EOFError`. A peer dropping
+  mid-frame previously crashed training instead of falling back to
+  local gradients.
+- **Network:** `_validate_model_consistency` runs `gather` + `allreduce`
+  in the same order on every rank before any `raise` (was a deadlock
+  vector — rank 0 could raise while peers waited at the next
+  collective). Gather is bounded with a 10s timeout.
+- **Resource leaks:** `_ping_peer` and `_add_manual_peer` close
+  writers in a `finally` block so a `readline()` timeout no longer
+  drops the StreamWriter mid-flight.
+- **Resource leaks:** `Pool._start_agent` cleans up the background
+  loop + thread when `agent.start()` raises (port conflict, mDNS
+  failure). Previously the orphan loop survived and a retry stacked
+  a second loop on top.
+- **Resource leaks:** `TaskWorker.stop` drains in-flight task wrappers
+  before shutting the executor (was `wait=False`, leaked results
+  for tasks completing during shutdown).
+- **Resource leaks:** `TaskDispatcher` resolves stranded
+  `TaskFuture` objects when a worker disconnects, instead of
+  letting callers block forever on `future.result()`.
+- **Resource leaks:** `_ping_peer`'s explicit close moved to
+  `finally`; `_add_manual_peer` declares the writer with `Optional`
+  and closes in `finally`.
+- **Coordinator election:** secure-mode gossip pings now carry the
+  signed HW exchange (APING v2). mDNS-discovered peers in a
+  token-protected fleet refresh from a zero-score placeholder to
+  their real `compute_score` after one successful round, instead of
+  staying zero forever (Issue 2 followup — was only fixed for the
+  manual-peer bootstrap path).
+- **Wire protocol:** `WireMessage.unpack(bytes)` now enforces
+  `MAX_PAYLOAD_SIZE`. The streaming path already capped, the bytes
+  path didn't.
+- **Compression accounting:** `_bytes_sent` now reflects actual wire
+  bytes (dense, until sparse-on-wire ships). The previous value
+  under-counted by claiming sparse savings the wire didn't deliver.
+- **Heartbeat:** `writer.drain()` in the heartbeat handler is now
+  bounded by 1s — slowloris on the receive side could otherwise
+  pin the handler indefinitely.
+- **Heartbeat:** empty / RST-on-connect noise no longer counts as a
+  failed auth attempt (port scanners would have banned themselves
+  + collateral users from the same IP).
+- **Engines:** `TorchEngine.apply_flat_gradients` reuses
+  `param.grad` via `copy_` (cross-device in-place) instead of
+  rebinding to a fresh tensor every step. Optimizers caching
+  references to `.grad` now stay valid.
+- **Engines:** `TorchEngine` and `MLXEngine` `profile()` delegate to
+  `pool.agent.profile_hardware()` instead of returning a zeroed
+  placeholder.
+- **SDK:** `Pool.leave` consolidated on the `_teardown_loop` helper.
+- **Discovery:** `_parse_service_info` and `_parse_ifconfig` handle
+  IPv6 addresses (was IPv4-only).
+- **Pool / network:** `_classify_interface` no longer assumes en0 is
+  WiFi when `networksetup` is unavailable (mis-classified Mac mini
+  Ethernet → AGGRESSIVE compression).
+- **Training guards:** `_dataset_len` accepts both `(X, y)` tuples
+  and `[X, y]` lists when both halves expose `.shape`. Bare 2-element
+  lists fall through to `len()` instead of being mis-read as
+  features+labels.
+- **Training:** `WeightedDistributedSampler.drop_last` is now
+  honored (was a dead field).
+- **Compute:** `@task` re-registration that replaces a different
+  callable now logs at `WARNING` (was `INFO` — silently masked typos).
+- **Misc:** f-string typo in `_pick_ephemeral_port` error message;
+  retry budget bumped 16→32 with last-port diagnostic; `Dashboard.
+  update_training` honors zero values via `None` sentinels;
+  `Dashboard.start` falls back gracefully on non-TTY environments;
+  thermal probe failure logged once on degraded systems.
+
+### Added (test infrastructure)
+
+- `tests/test_fuzz/` — hypothesis-based fuzz for `WireMessage`,
+  `TaskSpec`, `pack_array`, and `HardwareExchange` (38 tests,
+  ~600 examples per run).
+- `tests/test_stress/` — concurrent registry mutation,
+  100-round allreduce soak, FD-leak detection, dispatcher
+  high-throughput (17 tests).
+- `tests/test_failure_injection/` — peer dropout mid-allreduce,
+  brute-force ban, replay attack rejection, oversize payload,
+  slowloris (12 + 1 xfail documenting transport-level rate-limit gap).
+- `tests/test_production/` — multi-node convergence (N=2..4),
+  weighted heterogeneous batching, `setup` rebroadcast, all
+  compression levels converge, concurrent train+dispatch, thermal
+  pause hysteresis (22 tests).
+- New deps: `hypothesis>=6` (dev only).
+
+### Removed
+
+- None. All v2.1.x APIs preserved.
+
+### Migration guide (v2.1.x → v2.2)
+
+Same as v2.2.0-rc1. If you're already on rc1, this is a drop-in
+replacement.
+
 ## [2.2.0-rc1] — 2026-04-19
 
 Release candidate for v2.2. Phase B (security) and Phase C (product)

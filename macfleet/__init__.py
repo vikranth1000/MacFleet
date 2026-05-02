@@ -8,7 +8,7 @@ Zero-config discovery. Framework-agnostic engines. Adaptive networking.
 import logging
 from typing import TYPE_CHECKING
 
-__version__ = "2.2.0rc1"
+__version__ = "2.2.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
