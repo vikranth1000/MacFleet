@@ -285,10 +285,18 @@ class DataParallel:
             logger.error("Gradient deserialization failed: %s", e)
             logger.warning("Falling back to local gradients (discarding allreduce result)")
             averaged = flat_grads
-        except (asyncio.TimeoutError, ConnectionError, OSError) as e:
+        except (
+            asyncio.TimeoutError,
+            asyncio.IncompleteReadError,
+            ConnectionError,
+            OSError,
+            EOFError,
+        ) as e:
             # Node dropout: a peer disconnected mid-allreduce (lid closed,
-            # thermal shutdown, network failure). Use local gradients for
-            # this step rather than crashing the entire training run.
+            # thermal shutdown, network failure). asyncio.IncompleteReadError
+            # surfaces when readexactly hits EOF mid-frame; EOFError covers
+            # any future stdlib variants. Use local gradients for this
+            # step rather than crashing the entire training run.
             logger.error("Allreduce failed (node dropout?): %s", e)
             logger.warning(
                 "Falling back to local gradients. Training continues but "
